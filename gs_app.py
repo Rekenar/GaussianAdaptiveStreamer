@@ -1,5 +1,17 @@
 # gs_app.py
-# python http3_server.py --certificate certificates/ssl_cert.pem --private-key certificates/ssl_key.pem
+
+'''
+python http3_server.py --certificate certificates/ssl_cert.pem --private-key certificates/ssl_key.pem
+'''
+'''
+ google-chrome \
+  --enable-experimental-web-platform-features \
+  --ignore-certificate-errors-spki-list=BSQJ0jkQ7wwhR7KvPZ+DSNk2XTZ/MS6xCbo9qu++VdQ= \
+  --origin-to-force-quic-on=localhost:4433 \
+  https://localhost:4433/
+'''
+
+
 import io, os, asyncio
 import numpy as np
 from plyfile import PlyData
@@ -61,9 +73,25 @@ shs = torch.from_numpy(shs_np).to(device)
 # free host copies
 del means_np, quats_np, scales_np, opacities_np, shs_np
 
-def render_image(azimuth_deg, elevation_deg, x, y, z, fx, fy, cx, cy, width, height) -> bytes:
+def render_image(azimuth_deg, elevation_deg, x, y, z,
+                 fx, fy, cx, cy, width, height, profile) -> bytes:
+    print(f"GPU memory before: {torch.cuda.memory_allocated() / 1024**3:.2f} GB") 
+
+    # Clamp profile and compute downscale factor (1, 2, 4, 8)
+    p = max(0, min(3, int(profile)))
+    factor = 1 << p
+
+    w = int(width)
+    h = int(height)
+    
+    print(f"[Render] Requested params -> azimuth={azimuth_deg}, elevation={elevation_deg}, "
+          f"x={x}, y={y}, z={z}, fx={fx}, fy={fy}, cx={cx}, cy={cy}, "
+          f"width={w}, height={h}, profile={profile} (factor={factor})")
+
     viewmat = create_viewmat(azimuth_deg, elevation_deg, x, y, z).to(device).unsqueeze(0)
-    K = torch.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=torch.float32, device=device).unsqueeze(0)
+    K = torch.tensor([[fx, 0, cx],
+                      [0, fy, cy],
+                      [0, 0, 1]], dtype=torch.float32, device=device).unsqueeze(0)
 
     colors_rendered, alphas, _ = rasterization(
         means=means,
@@ -73,26 +101,37 @@ def render_image(azimuth_deg, elevation_deg, x, y, z, fx, fy, cx, cy, width, hei
         colors=shs,
         viewmats=viewmat,
         Ks=K,
-        width=int(width),
-        height=int(height),
+        width=w,            # render at normal size
+        height=h,
         packed=False,
         sh_degree=0,
         backgrounds=None,
         render_mode="RGB",
     )
+
     img = colors_rendered[0].detach().cpu().numpy()
     img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
+
     pil_img = Image.fromarray(img)
+
+    # Downsample AFTER rendering
+    if factor > 1:
+        out_w = max(1, w // factor)
+        out_h = max(1, h // factor)
+        pil_img = pil_img.resize((out_w, out_h), resample=Image.LANCZOS)
+        print(f"[Render] Image size after downsampling: {pil_img.size}")
+    else:
+        print(f"[Render] No downsampling applied (profile={profile})")
+
     buf = io.BytesIO()
     pil_img.save(buf, format="JPEG", quality=70)
     buf.seek(0)
+    print(f"GPU memory after: {torch.cuda.memory_allocated() / 1024**3:.2f} GB") 
     return buf.getvalue()
 
 # ------------------- HTTP handlers -------------------
 async def home(request:Request):
     return FileResponse("templates/index.html")
-
-
 
 async def render_handler(request: Request):
     data = await request.json()
@@ -107,16 +146,16 @@ async def render_handler(request: Request):
     cy = float(data.get("cy", 300.0))
     width = float(data.get("width", 800))
     height = float(data.get("height", 600))
+    profile = int(data.get("profile", 0))  # 0..3 -> 1x,2x,4x,8x downsample
 
-    # Offload to a worker thread so the event loop stays responsive
+    print(f"[Handler] Received request data: {data}")
+
+
     jpeg_bytes = await asyncio.to_thread(
-        render_image, azimuth, elevation, x, y, z, fx, fy, cx, cy, width, height
+        render_image, azimuth, elevation, x, y, z, fx, fy, cx, cy, width, height, profile
     )
-    return Response(
-        jpeg_bytes,
-        media_type="image/jpeg",
-        headers={"Cache-Control": "no-store"},
-    )
+    return Response(jpeg_bytes, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
 
 starlette = Starlette(
     routes=[
