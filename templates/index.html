@@ -1,45 +1,36 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>3D Object Viewer</title>
     <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/abr.js"></script>
 </head>
+
 <body>
-    <div class="sidebar" id="sidebar">
-        <button class="toggle-button" onclick="toggleSidebar()">☰</button>
-            <div class="options">
-                <h3>Camera Parameters</h3>
-                <label>Resolution:</label>
-                <select id="resolution" onchange="updateResolution()">
-                    <option value="320x240">320x240</option>
-                    <option value="480x360">480x360</option>
-                    <option value="640x480">640x480</option>
-                    <option value="800x600" selected>800x600</option>
-                    <option value="1024x768">1024x768</option>
-                    <option value="1280x720">1280x720</option>
-                    <option value="1366x768">1366x768</option>
-                    <option value="1600x900">1600x900</option>
-                    <option value="1920x1080">1920x1080</option>
-                    <option value="2560x1440">2560x1440</option>
-                </select><br>
-                <label>Principal Point X (cx):</label>
-                <input type="number" id="cx" value="400"><br>
-                <label>Principal Point Y (cy):</label>
-                <input type="number" id="cy" value="300"><br>
-                <label>Rotation Step (°):</label>
-                <input type="number" id="rot-step" value="1" step="0.1"><br>
-                <label>Position Step:</label>
-                <input type="number" id="pos-step" value="0.1" step="0.01"><br>
-                <label>Focal Length X (fx):</label>
-                <input type="number" id="fx" value="1300"><br>
-                <label>Focal Length Y (fy):</label>
-                <input type="number" id="fy" value="800"><br>
-                <button class="apply-button" onclick="applyConfig()">Apply</button>
-            </div>
+    <div class="sidebar" id="sidebar"> <button class="toggle-button" onclick="toggleSidebar()">☰</button>
+        <div class="options">
+            <h3>Camera Parameters</h3> <label>Resolution:</label> <select id="resolution" onchange="updateResolution()">
+                <option value="320x240">320x240</option>
+                <option value="480x360">480x360</option>
+                <option value="640x480">640x480</option>
+                <option value="800x600" selected>800x600</option>
+                <option value="1024x768">1024x768</option>
+                <option value="1280x720">1280x720</option>
+                <option value="1366x768">1366x768</option>
+                <option value="1600x900">1600x900</option>
+                <option value="1920x1080">1920x1080</option>
+                <option value="2560x1440">2560x1440</option>
+            </select><br> <label>Principal Point X (cx):</label> <input type="number" id="cx" value="400"><br>
+            <label>Principal Point Y (cy):</label> <input type="number" id="cy" value="300"><br> <label>Rotation Step
+                (°):</label> <input type="number" id="rot-step" value="1" step="0.1"><br> <label>Position Step:</label>
+            <input type="number" id="pos-step" value="0.1" step="0.01"><br> <label>Focal Length X (fx):</label> <input
+                type="number" id="fx" value="1300"><br> <label>Focal Length Y (fy):</label> <input type="number" id="fy"
+                value="800"><br> <button class="apply-button" onclick="applyConfig()">Apply</button>
+        </div>
     </div>
-    
     <div class="main-content">
         <div class="container">
             <div id="object-viewer">
@@ -47,16 +38,16 @@
             </div>
             <div class="instructions">
                 <p>Current position: <span id="position-display">Angle: 180°, Elevation: 0°, X: 0, Y: 0, Z: 5</span></p>
-                <p>Use Arrow keys to rotate, W/S for forward/back, A/D for left/right, Space/Shift for up/down</p>
+                <p>Use Arrow keys to rotate, W/S for Barlow/back, A/D for left/right, Space/Shift for up/down</p>
             </div>
         </div>
     </div>
-    
-<script>
+    <script>
         const objectViewer = document.getElementById('object-viewer');
         const positionDisplay = document.getElementById('position-display');
         const sidebar = document.getElementById('sidebar');
-        
+        const resolutionSelect = document.getElementById('resolution');
+        const abr = new ABRAlgorithm(resolutionSelect);
         let angle = 180;
         let elevation = 0;
         let x = 0;
@@ -72,38 +63,28 @@
         let posStep = 0.1;
         let isLoading = false;
         const keysPressed = new Set();
-        
-        
-        // Load initial image
-        updateImage();
-        
-        // Handle keyboard events
+
+        // Load initial image updateImage(); 
+        // Handle keyboard events 
         document.addEventListener('keydown', (event) => {
             const key = event.key.toLowerCase();
             if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'w', 's', 'a', 'd', ' ', 'shift'].includes(key)) {
-                event.preventDefault();
-                keysPressed.add(key);
+                event.preventDefault(); keysPressed.add(key);
             }
         });
-        
         document.addEventListener('keyup', (event) => {
             const key = event.key.toLowerCase();
             keysPressed.delete(key);
         });
-        
         function update() {
             requestAnimationFrame(update);
-            
             if (isLoading || keysPressed.size === 0) {
                 return;
             }
-            
             let updated = false;
             const rad = angle * Math.PI / 180;
             const cosA = Math.cos(rad);
-            const sinA = Math.sin(rad);
-            
-            // Apply rotations first
+            const sinA = Math.sin(rad); // Apply rotations first 
             if (keysPressed.has('arrowup')) {
                 elevation = Math.min(90, elevation + rotStep);
                 updated = true;
@@ -113,15 +94,13 @@
                 updated = true;
             }
             if (keysPressed.has('arrowleft')) {
-                angle = (angle - rotStep + 360) % 360; // Ensure positive modulo
+                angle = (angle - rotStep + 360) % 360; // Ensure positive modulo 
                 updated = true;
             }
             if (keysPressed.has('arrowright')) {
                 angle = (angle + rotStep) % 360;
                 updated = true;
-            }
-            
-            // Then apply translations with potentially updated angle
+            } // Apply translations 
             if (keysPressed.has('w')) {
                 x += posStep * sinA;
                 z += posStep * cosA;
@@ -150,16 +129,11 @@
                 y -= posStep;
                 updated = true;
             }
-            
             if (updated) {
-                positionDisplay.textContent = `Angle: ${angle.toFixed(0)}°, Elevation: ${elevation.toFixed(0)}°, X: ${x.toFixed(1)}, Y: ${y.toFixed(1)}, Z: ${z.toFixed(1)}`;
+                positionDisplay.textContent = "Angle: ${angle.toFixed(0)}°, Elevation: ${elevation.toFixed(0)}°, X: ${x.toFixed(1)}, Y: ${y.toFixed(1)}, Z: ${z.toFixed(1)}";
                 sendPosition();
             }
         }
-        
-        // Start the update loop
-        update();
-        
         function updateResolution() {
             const resolution = document.getElementById('resolution').value;
             const [w, h] = resolution.split('x').map(Number);
@@ -171,7 +145,6 @@
             document.getElementById('cy').value = cy;
             sendPosition();
         }
-        
         function applyConfig() {
             fx = parseFloat(document.getElementById('fx').value);
             fy = parseFloat(document.getElementById('fy').value);
@@ -181,20 +154,16 @@
             posStep = parseFloat(document.getElementById('pos-step').value);
             sendPosition();
         }
-        
         function toggleSidebar() {
             sidebar.classList.toggle('collapsed');
         }
-        
         function sendPosition() {
             isLoading = true;
-            
+            abr.startRequest();
             fetch('/render', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ 
+                headers: { 'Content-Type': 'application/json', },
+                body: JSON.stringify({
                     angle: angle,
                     elevation: elevation,
                     x: x,
@@ -207,34 +176,34 @@
                     width: width,
                     height: height
                 }),
-            })
-            .then(response => response.blob())
-            .then(blob => {
-                const imgUrl = URL.createObjectURL(blob);
-                const img = new Image();
-                img.onload = () => {
-                    objectViewer.innerHTML = '';
-                    objectViewer.appendChild(img);
-                    isLoading = false;
-                    URL.revokeObjectURL(imgUrl);
-                };
-                img.onerror = () => {
-                    objectViewer.innerHTML = '<p>Error loading image</p>';
-                    isLoading = false;
-                    URL.revokeObjectURL(imgUrl);
-                };
-                img.src = imgUrl;
-            })
-            .catch(error => {
-                console.error('Error:', error);
-                objectViewer.innerHTML = '<p>Error loading image</p>';
-                isLoading = false;
-            });
-        }
-        
-        function updateImage() {
-            sendPosition();
-        }
-    </script>
+            }).then(
+                response => Promise.all([response.blob(), response.headers.get('Content-Length')]))
+                .then(([blob, contentLength]) => {
+                    const imgUrl = URL.createObjectURL(blob);
+                    const img = new Image();
+                    img.onload = () => {
+                        objectViewer.innerHTML = '';
+                        objectViewer.appendChild(img);
+                        isLoading = false;
+                        const resolution = abr.endRequest(parseInt(contentLength) || 100000); // Fallback size 
+                        if (resolution) {
+                            width = resolution.width;
+                            height = resolution.height;
+                            cx = width / 2;
+                            cy = height / 2;
+                            document.getElementById('cx').value = cx;
+                            document.getElementById('cy').value = cy;
+                        }
+                        URL.revokeObjectURL(imgUrl);
+                    }; img.onerror = () => { objectViewer.innerHTML = '<p>Error loading image</p>'; isLoading = false; abr.endRequest(0); URL.revokeObjectURL(imgUrl); }; img.src = imgUrl;
+                }).catch(error => { console.error('Error:', error); objectViewer.innerHTML = '<p>Error loading image</p>'; isLoading = false; abr.endRequest(0); });
+        } 
+        function updateImage() { 
+            sendPosition(); 
+        } 
+        // Start the update loop 
+        update(); 
+        </script>
 </body>
+
 </html>
