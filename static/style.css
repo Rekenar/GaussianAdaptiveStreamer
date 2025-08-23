@@ -122,8 +122,6 @@ body {
 
 #object-viewer {
     position: relative;
-    width: 1024px;
-    height: 768px;
     display: flex;
     justify-content: center;
     align-items: center;
@@ -134,9 +132,10 @@ body {
 }
 
 #object-viewer img {
-    width: 1024px;
-    height: 768px;
-    object-fit: cover;
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain; /* keep aspect ratio */
 }
 
 .instructions {
