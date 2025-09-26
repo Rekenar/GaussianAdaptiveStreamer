@@ -6,7 +6,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>3D Object Viewer</title>
     <link rel="stylesheet" href="/static/style.css" />
-    <script src="/static/abr.js"></script>
+    <script src="/static/abrs/L2A.js"></script>
+    <script src="/static/abrs/Latency.js"></script>
+    <script src="/static/abrs/LoL+.js"></script>
 </head>
 
 <body>
@@ -15,8 +17,15 @@
         <div class="options">
             <h3>Camera Parameters</h3>
 
-            <label> Auto Quality (ABR)</label>
+            <label>Auto Quality (ABR)</label>
             <input type="checkbox" id="abr-enabled" checked />
+
+            <label>ABR Algorithm:</label>
+            <select id="abr-algo">
+                <option value="simple" selected>Simple (Latency)</option>
+                <option value="l2a">L2A</option>
+                <option value="lol+">LoL+</option>
+            </select>
 
             <label>Resolution:</label>
             <select id="resolution">
@@ -62,18 +71,30 @@
                     <span id="position-display">Angle: 180°, Elevation: 0°, X: 0, Y: 0, Z: 5</span>
                 </p>
                 <p>Use Arrow keys to rotate, W/S for forward/back, A/D for left/right, Space/Shift for up/down</p>
+                <p>Server render time: <span id="render-ms">–</span> ms</p>
             </div>
         </div>
     </div>
 
     <script>
+        const ABRFactory = {
+            create(kind, resSelect) {
+                switch ((kind).toLowerCase()) {
+                    case 'l2a': return new L2A_ABR(resSelect);
+                    case 'lol+': return new LoLPlusABR(resSelect);
+                    default: return new LatencyABR(resSelect);
+                }
+            }
+        };
+
         const objectViewer = document.getElementById('object-viewer');
         const positionDisplay = document.getElementById('position-display');
         const sidebar = document.getElementById('sidebar');
         const resolutionSelect = document.getElementById('resolution');
         const abrToggle = document.getElementById('abr-enabled');
+        const abrAlgoSelect = document.getElementById('abr-algo');
 
-        const abr = new ABRAlgorithm(resolutionSelect);
+        let abr = ABRFactory.create(abrAlgoSelect.value, resolutionSelect);
 
         let angle = 180;
         let elevation = 0;
@@ -99,6 +120,7 @@
         abrToggle.addEventListener('change', () => {
 
         });
+
 
         // Handle keyboard events
         document.addEventListener('keydown', (event) => {
@@ -159,6 +181,7 @@
 
             // Commit ABR state from the checkbox
             abrEnabledActive = abrToggle.checked;
+            abr = ABRFactory.create(abrAlgoSelect.value, resolutionSelect)
 
             cx = width / 2; cy = height / 2;
             document.getElementById('cx').value = cx;
@@ -176,40 +199,48 @@
 
             const abrEnabled = abrToggle.checked;
             let profile = 0;
-            if (abrToggle.checked) {
-                profile = abr.pickProfile(width, height); // decide for this request
-                abr.startRequest(profile, width, height); // timestamp the request
+            if (abrEnabled) {
+                profile = abr.pickProfile(width, height);   // decide for this request
+                abr.startRequest(profile, width, height);   // timestamp the request
             }
+
+            const tFetchStart = performance.now();
 
             fetch('/render', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    angle, elevation, x, y, z, fx, fy, cx, cy, width, height,
-                    profile                                   // 👈 send profile to server
+                    angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile
                 }),
             })
-                .then(response => Promise.all([response.blob(), response.headers.get('Content-Length')]))
-                .then(([blob, contentLength]) => {
+                .then(async (response) => {
+                    // Read headers *before* consuming the body
+                    const contentLength = Number(response.headers.get('Content-Length') || 0);
+                    const renderHeader = response.headers.get('X-Render-Time-Ms');
+                    const renderMs = renderHeader != null ? parseFloat(renderHeader) : NaN;
+
+                    // Consume the body
+                    const blob = await response.blob();
+
+                    // Provide both header data + blob downstream
+                    return { blob, contentLength, renderMs };
+                })
+                .then(({ blob, contentLength, renderMs }) => {
                     const imgUrl = URL.createObjectURL(blob);
                     const img = new Image();
 
                     img.onload = () => {
-                        // target display size (your base resolution)
                         const displayW = Math.round(width);
                         const displayH = Math.round(height);
 
-                        // received image size (after server downsampling by profile)
                         const rx = img.naturalWidth;
                         const ry = img.naturalHeight;
 
-                        // HiDPI support – render at device pixel ratio, CSS-scale down for crispness
                         const scale = window.devicePixelRatio || 1;
-
                         const canvas = document.createElement('canvas');
-                        canvas.width = displayW * scale;      // internal pixel buffer
+                        canvas.width = displayW * scale;
                         canvas.height = displayH * scale;
-                        canvas.style.width = displayW + 'px'; // CSS size
+                        canvas.style.width = displayW + 'px';
                         canvas.style.height = displayH + 'px';
 
                         const ctx = canvas.getContext('2d', { alpha: false });
@@ -217,8 +248,6 @@
                         ctx.imageSmoothingQuality = 'high';
                         ctx.scale(scale, scale);
 
-                        // Draw received image scaled up to the display size
-                        // (source rx×ry -> dest displayW×displayH)
                         ctx.drawImage(img, 0, 0, rx, ry, 0, 0, displayW, displayH);
 
                         objectViewer.innerHTML = '';
@@ -227,7 +256,17 @@
                         isLoading = false;
 
                         if (abrEnabled) {
-                            abr.endRequest(parseInt(contentLength) || 0);
+                            // Prefer header Content-Length, fallback to blob.size if needed
+                            const bytes = contentLength || blob.size || 0;
+
+                            // Pass server render time (ms) as optional 4th arg.
+                            // Your ABR can read it if implemented; otherwise it’s ignored.
+                            abr.endRequest(bytes, rx, ry, renderMs);
+                        }
+
+                        if (!Number.isNaN(renderMs)) {
+                            const el = document.getElementById('render-ms');
+                            if (el) el.textContent = renderMs.toFixed(2);
                         }
 
                         URL.revokeObjectURL(imgUrl);
@@ -258,6 +297,12 @@
         // Load initial image and start the loop
         updateImage();
         update();
+
+
+
+
+
+
     </script>
 </body>
 

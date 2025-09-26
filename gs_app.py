@@ -19,6 +19,7 @@ import torch
 from scipy.spatial.transform import Rotation as R
 from gsplat import rasterization
 from PIL import Image
+import time
 
 from starlette.applications import Starlette
 from starlette.responses import Response
@@ -74,7 +75,7 @@ shs = torch.from_numpy(shs_np).to(device)
 del means_np, quats_np, scales_np, opacities_np, shs_np
 
 def render_image(azimuth_deg, elevation_deg, x, y, z,
-                 fx, fy, cx, cy, width, height, profile) -> bytes:
+                 fx, fy, cx, cy, width, height, profile) -> tuple[bytes, float]:
     print(f"GPU memory before: {torch.cuda.memory_allocated() / 1024**3:.2f} GB") 
 
     # Clamp profile and compute downscale factor (1, 2, 4, 8)
@@ -83,7 +84,7 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
 
     w = int(width)
     h = int(height)
-    
+
     print(f"[Render] Requested params -> azimuth={azimuth_deg}, elevation={elevation_deg}, "
           f"x={x}, y={y}, z={z}, fx={fx}, fy={fy}, cx={cx}, cy={cy}, "
           f"width={w}, height={h}, profile={profile} (factor={factor})")
@@ -93,6 +94,11 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
                       [0, fy, cy],
                       [0, 0, 1]], dtype=torch.float32, device=device).unsqueeze(0)
 
+    # --- timing start (sync first if on CUDA) ---
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t0 = time.perf_counter()
+
     colors_rendered, alphas, _ = rasterization(
         means=means,
         quats=quats,
@@ -101,7 +107,7 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
         colors=shs,
         viewmats=viewmat,
         Ks=K,
-        width=w,            # render at normal size
+        width=w,
         height=h,
         packed=False,
         sh_degree=0,
@@ -126,8 +132,18 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
     buf = io.BytesIO()
     pil_img.save(buf, format="JPEG", quality=70)
     buf.seek(0)
+
+    # --- timing end (sync again for accurate GPU timing) ---
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t1 = time.perf_counter()
+    render_ms = (t1 - t0) * 1000.0
+
+    print(f"[Render] Duration: {render_ms:.2f} ms")
     print(f"GPU memory after: {torch.cuda.memory_allocated() / 1024**3:.2f} GB") 
-    return buf.getvalue()
+
+    return buf.getvalue(), render_ms
+
 
 # ------------------- HTTP handlers -------------------
 async def home(request:Request):
@@ -150,11 +166,20 @@ async def render_handler(request: Request):
 
     print(f"[Handler] Received request data: {data}")
 
-
-    jpeg_bytes = await asyncio.to_thread(
+    # render in a worker thread and get bytes + duration
+    jpeg_bytes, render_ms = await asyncio.to_thread(
         render_image, azimuth, elevation, x, y, z, fx, fy, cx, cy, width, height, profile
     )
-    return Response(jpeg_bytes, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    return Response(
+        jpeg_bytes,
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Render-Time-Ms": f"{render_ms:.2f}"
+        },
+    )
+
 
 
 starlette = Starlette(
