@@ -10,23 +10,20 @@ class LatencyABR {
     this.windowSize = 30;          // ↑ for stability
 
     // Thresholds (deadband widened)
-    this.upgradeMs = 32;           // was 50 (harder to upgrade)
-    this.downgradeMs = 90;         // was 70 (easier to downgrade)
+    this.upgradeMs = 32;          // was 50 (harder to upgrade)
+    this.downgradeMs = 90;          // was 70 (easier to downgrade)
 
     // Hysteresis
-    this.needGoodCount = 12;       // was 5
+    this.needGoodCount = 12;         // was 5
     this.goodStreak = 0;
     this.lastUpAt = 0;
     this.lastDownAt = 0;
-    this.upCooldownMs = 1500;      // upgrades spaced out
-    this.downCooldownMs = 600;     // downgrades remain responsive
+    this.upCooldownMs = 3000;      // upgrades spaced out
+    this.downCooldownMs = 600;       // downgrades remain responsive
 
     // Optional: track rough bytes-per-pixel to sanity-check upgrades
-    this.bppWin = [];              // recent bytes-per-pixel (size / (rx*ry))
+    this.bppWin = [];               // recent bytes-per-pixel (size / (rx*ry))
     this.bppWinSize = 20;
-
-    // NEW: simple last measured throughput (bytes/sec)
-    this.lastThroughputBps = 0;
 
     this._t0 = null;
     this.debug = true;
@@ -53,11 +50,6 @@ class LatencyABR {
 
     const hasServer = Number.isFinite(renderMs) && renderMs >= 0;
     const netMs = hasServer ? Math.max(1, dt - renderMs) : dt;
-
-    // NEW: update simple throughput measurement (bytes/sec) for this request
-    if (contentLengthBytes > 0 && netMs > 0) {
-      this.lastThroughputBps = (contentLengthBytes * 1000) / netMs; // bytes/ms → B/s
-    }
 
     // record windows
     this.windowTotal.push(dt); if (this.windowTotal.length > this.windowSize) this.windowTotal.shift();

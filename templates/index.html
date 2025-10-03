@@ -12,22 +12,26 @@
 </head>
 
 <body>
-    <div class="sidebar" id="sidebar">
-        <button class="toggle-button" onclick="toggleSidebar()">☰</button>
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar" aria-label="Controls sidebar">
+        <button class="toggle-button" onclick="toggleSidebar()" aria-label="Toggle sidebar">☰</button>
+
         <div class="options">
             <h3>Camera Parameters</h3>
 
-            <label>Auto Quality (ABR)</label>
-            <input type="checkbox" id="abr-enabled" checked />
+            <label class="row">
+                <span>Auto Quality (ABR)</span>
+                <input type="checkbox" id="abr-enabled" checked />
+            </label>
 
-            <label>ABR Algorithm:</label>
+            <label for="abr-algo">ABR Algorithm</label>
             <select id="abr-algo">
                 <option value="simple" selected>Simple (Latency)</option>
                 <option value="l2a">L2A</option>
                 <option value="lol+">LoL+</option>
             </select>
 
-            <label>Resolution:</label>
+            <label for="resolution">Resolution</label>
             <select id="resolution">
                 <option value="320x240">320x240</option>
                 <option value="480x360">480x360</option>
@@ -39,39 +43,44 @@
                 <option value="1600x900">1600x900</option>
                 <option value="1920x1080">1920x1080</option>
                 <option value="2560x1440">2560x1440</option>
-            </select><br />
+            </select>
 
-            <label>Principal Point X (cx):</label>
-            <input type="number" id="cx" value="400" /><br />
-            <label>Principal Point Y (cy):</label>
-            <input type="number" id="cy" value="300" /><br />
+            <div class="grid-2">
+                <label for="cx">Principal X (cx)</label>
+                <input type="number" id="cx" value="400" />
+                <label for="cy">Principal Y (cy)</label>
+                <input type="number" id="cy" value="300" />
+            </div>
 
-            <label>Rotation Step (°):</label>
-            <input type="number" id="rot-step" value="1" step="0.1" /><br />
-            <label>Position Step:</label>
-            <input type="number" id="pos-step" value="0.1" step="0.01" /><br />
+            <div class="grid-2">
+                <label for="rot-step">Rotation Step (°)</label>
+                <input type="number" id="rot-step" value="1" step="0.1" />
+                <label for="pos-step">Position Step</label>
+                <input type="number" id="pos-step" value="0.1" step="0.01" />
+            </div>
 
-            <label>Focal Length X (fx):</label>
-            <input type="number" id="fx" value="1300" /><br />
-            <label>Focal Length Y (fy):</label>
-            <input type="number" id="fy" value="800" /><br />
+            <div class="grid-2">
+                <label for="fx">Focal X (fx)</label>
+                <input type="number" id="fx" value="1300" />
+                <label for="fy">Focal Y (fy)</label>
+                <input type="number" id="fy" value="800" />
+            </div>
 
-            <!-- ===== Sidebar: Record / Playback (drop-in replacement) ===== -->
-            <h3 style="margin-top:1rem;">Record</h3>
+            <!-- Record -->
+            <h3 class="section">Record</h3>
             <div class="card">
                 <div class="btn-row">
                     <button id="start-rec" class="btn btn-danger">● Start Recording</button>
-                    <button id="stop-rec" class="btn" disabled>Stop & Save</button>
+                    <button id="stop-rec" class="btn" disabled>Stop &amp; Save</button>
                 </div>
                 <div id="rec-status" class="muted">Not recording</div>
             </div>
 
-            <h3 style="margin-top:1rem;">Playback</h3>
+            <!-- Playback -->
+            <h3 class="section">Playback</h3>
             <div class="card">
-                <label class="file-input">
-                    <input type="file" id="rec-file" accept=".json">
-                    <span id="file-label">Choose a recording JSON…</span>
-                </label>
+                <input type="file" id="rec-file" accept=".json" class="file-native">
+
 
                 <div class="btn-row">
                     <button id="start-playback" class="btn btn-primary">Start</button>
@@ -83,26 +92,36 @@
             </div>
 
             <button class="apply-button" onclick="applyConfig()">Apply</button>
-            <!-- ===== end ===== -->
-
         </div>
-    </div>
+    </aside>
 
-    <div class="main-content">
-        <div class="container">
-            <div id="object-viewer">
-                <p>Loading 3D object...</p>
+    <!-- Main -->
+    <main class="main-content">
+        <header class="topbar">
+            <div class="brand">
+                <span class="logo">🟦</span>
+                <span class="title">3D Object Viewer</span>
             </div>
-            <div class="instructions">
-                <p>
-                    Current position:
-                    <span id="position-display">Angle: 180°, Elevation: 0°, X: 0, Y: 0, Z: 5</span>
-                </p>
-                <p>Use Arrow keys to rotate, W/S for forward/back, A/D for left/right, Space/Shift for up/down</p>
-                <p>Server render time: <span id="render-ms">–</span> ms</p>
+            <div class="status">
+                <span class="chip">Server render: <strong><span id="render-ms">–</span> ms</strong></span>
+                <span class="chip secondary">Position: <strong id="position-display">Angle: 180°, Elevation: 0°, X: 0,
+                        Y: 0, Z: 5</strong></span>
             </div>
-        </div>
-    </div>
+        </header>
+
+        <section class="stage">
+            <div id="object-viewer" role="img" aria-label="Rendered 3D view">
+                <p class="placeholder">Loading 3D object…</p>
+            </div>
+
+            <div class="hud">
+                <div class="hud-row">
+                    <span>Use Arrow keys to rotate, W/S for forward/back, A/D for left/right, Space/Shift for
+                        up/down</span>
+                </div>
+            </div>
+        </section>
+    </main>
     <script>
         // --- Minimal recorder state ---
         const REC = {
@@ -453,12 +472,13 @@
                     if (ev.y != null) y = Number(ev.y);
                     if (ev.z != null) z = Number(ev.z);
 
+                    positionDisplay.textContent = `Angle: ${angle.toFixed(0)}°, Elevation: ${elevation.toFixed(0)}°, X: ${x.toFixed(1)}, Y: ${y.toFixed(1)}, Z: ${z.toFixed(1)}`;
 
                     await sendPosition();
-                    const predictedBps = abr.lastThroughputBps;
-                    const profileIdx = abr.profile;
+                    //const predictedBps = abr.lastThroughputBps;
+                    //const profileIdx = abr.profile;
 
-                    await reportPred(id, predictedBps, profileIdx);
+                    //await reportPred(id, predictedBps, profileIdx);
 
                 }
 
@@ -470,7 +490,6 @@
             }
         });
     </script>
-
 </body>
 
 </html>
