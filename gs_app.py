@@ -12,17 +12,16 @@ python http3_server.py --certificate certificates/ssl_cert.pem --private-key cer
 '''
 
 
-import io, os, asyncio
+import io, os, asyncio, json, time, subprocess
 import numpy as np
 from plyfile import PlyData
 import torch
 from scipy.spatial.transform import Rotation as R
 from gsplat import rasterization
 from PIL import Image
-import time
 
 from starlette.applications import Starlette
-from starlette.responses import Response
+from starlette.responses import Response, JSONResponse, PlainTextResponse
 from starlette.routing import Route, Mount
 from starlette.staticfiles import StaticFiles
 from starlette.requests import Request
@@ -144,6 +143,32 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
 
     return buf.getvalue(), render_ms
 
+def save_render_bytes(jpeg_bytes: bytes, out_dir: str = "captures", base_name: str | None = None) -> str:
+    """
+    Save a JPEG byte buffer to disk and return the absolute file path.
+
+    - out_dir is created if it doesn't exist (relative to this file by default).
+    - base_name (without directories) can be provided; otherwise a timestamped name is used.
+    """
+    # Make out_dir absolute (under project root by default)
+    out_dir_abs = out_dir if os.path.isabs(out_dir) else os.path.join(ROOT, out_dir)
+    os.makedirs(out_dir_abs, exist_ok=True)
+
+    if not base_name:
+        # Unique, timestamped filename with millisecond precision
+        ts_ms = int(time.time() * 1000)
+        base_name = f"frame-{ts_ms}.jpg"
+
+    # Ensure we only write under out_dir (no path traversal)
+    base_name = os.path.basename(base_name)
+    out_path = os.path.join(out_dir_abs, base_name)
+
+    with open(out_path, "wb") as f:
+        f.write(jpeg_bytes)
+
+    return out_path
+
+
 
 # ------------------- HTTP handlers -------------------
 async def home(request:Request):
@@ -170,6 +195,15 @@ async def render_handler(request: Request):
     jpeg_bytes, render_ms = await asyncio.to_thread(
         render_image, azimuth, elevation, x, y, z, fx, fy, cx, cy, width, height, profile
     )
+    
+        # Save the image to disk (non-blocking for the event loop)
+    # Example filename with size and profile; keep or simplify as you like.
+    _saved_path = await asyncio.to_thread(
+        save_render_bytes,
+        jpeg_bytes,
+        out_dir=os.path.join("static", "captures"),
+        base_name=f"{int(time.time()*1000)}_{int(width)}x{int(height)}_p{profile}.jpg"
+    )
 
     return Response(
         jpeg_bytes,
@@ -179,13 +213,83 @@ async def render_handler(request: Request):
             "X-Render-Time-Ms": f"{render_ms:.2f}"
         },
     )
+    
+# POST /playback/start
+# body: { "startAt": 1730551234567 }
+async def start_playback(request):
+    try:
+        body = await request.json()
+        start_at = int(body.get("startAt"))
+    except Exception as e:
+        print(f"[playback] Invalid JSON",  flush=True)
+        return PlainTextResponse("Invalid JSON", status_code=400)
 
+    now = int(time.time() * 1000)
+    wait_ms = start_at - now
+    print(f"[playback] Request received. startAt={start_at} (epoch ms), now={now}, "
+          f"waiting {max(wait_ms,0)} ms", flush=True)
+
+    while True:
+        delay = start_at - int(time.time() * 1000)
+        if delay <= 0:
+            break
+        time.sleep(min(delay / 1000.0, 0.5))
+
+    print(f"[playback] Starting bandwidth script at {int(time.time() * 1000)} (reached startAt)", flush=True)
+
+    cmd = ["python3", "bandwidth_fluctuations.py"]
+    try:
+        proc = subprocess.Popen(cmd)
+        print(f"[playback] Script launched with PID {proc.pid}", flush=True)
+        return JSONResponse({"ok": True, "pid": proc.pid, "startAt": start_at})
+    except Exception as e:
+        print(f"[playback] Failed to launch script", flush=True)
+        return PlainTextResponse("Failed to start script", status_code=500)
+
+
+
+BASE_DIR = "experiments"
+
+def now_ms(): return int(time.time() * 1000)
+
+def ensure_exp_dir(exp_id: str):
+    path = os.path.join(BASE_DIR, exp_id)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+# POST /metrics/predict
+# body: { "expId": "exp-001", "pred_bps": 8500000, "profile": 2 }
+async def metrics_predict(request):
+    try:
+        body = await request.json()
+        exp_id    = str(body["expId"])
+        pred_bps  = float(body["pred_bps"])
+        profile   = body.get("profile")
+    except Exception as e:
+        return PlainTextResponse(f"Invalid JSON: {e}", status_code=400)
+
+    d = ensure_exp_dir(exp_id)
+    out_path = os.path.join(d, "pred.ndjson")
+
+    rec = {
+        "t_server": now_ms(),
+        "expId": exp_id,
+        "pred_bps": pred_bps,
+        "profile": profile
+    }
+    with open(out_path, "a", buffering=1) as f:
+        f.write(json.dumps(rec) + "\n")
+
+    print(f"[predict] {rec}", flush=True)
+    return JSONResponse({"ok": True})
 
 
 starlette = Starlette(
     routes=[
         Route("/", home, methods=["GET"]),
         Route("/render", render_handler, methods=["POST"]),
+        Route("/playback/start", start_playback, methods=["POST"]),
+        Route("/metrics/predict", metrics_predict, methods=["POST"]),
         Mount("/static", StaticFiles(directory=STATIC_DIR), name="static"),
     ]
 )

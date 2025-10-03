@@ -43,7 +43,7 @@ class L2A_ABR {
     // Misc
     this._t0 = null;
     this.prevProfile = undefined;
-    this.debug = true;
+    this.debug = false;
   }
 
   pickProfile() {

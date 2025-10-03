@@ -36,7 +36,7 @@ class LoLPlusABR {
 
     // Misc
     this._t0 = null;
-    this.debug = true;
+    this.debug = false;
   }
 
   pickProfile() {

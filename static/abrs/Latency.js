@@ -1,36 +1,35 @@
-// /static/abr.js
 class LatencyABR {
-  /** Simple ABR returning profile 0..3.
-   * Uses recent request latency with rolling window + hysteresis.
-   * If server render time is available (X-Render-Time-Ms), it subtracts it
-   * to focus on network+browser time.
-   */
   constructor(_resolutionSelect) {
     this.profile = 0;
     this.minProfile = 0;
     this.maxProfile = 3;
 
     // Rolling windows
-    this.windowTotal = [];  // total wall time per req (ms)
-    this.windowNet   = [];  // total - serverRender (ms) when available
-    this.windowSize = 12;
+    this.windowTotal = [];
+    this.windowNet = [];
+    this.windowSize = 30;          // ↑ for stability
 
-    // Thresholds
-    this.upgradeMs = 95;    // faster than -> try higher quality (lower profile)
-    this.downgradeMs = 150; // slower than -> reduce quality (higher profile)
+    // Thresholds (deadband widened)
+    this.upgradeMs = 32;           // was 50 (harder to upgrade)
+    this.downgradeMs = 90;         // was 70 (easier to downgrade)
 
-    this.needGoodCount = 3; // consecutive “good” decisions before upgrade
-    this.goodStreak = 0;    // cooldown logic
-    this.lastChangeAt = 0;
-    this.changeCooldownMs = 400;
+    // Hysteresis
+    this.needGoodCount = 12;       // was 5
+    this.goodStreak = 0;
+    this.lastUpAt = 0;
+    this.lastDownAt = 0;
+    this.upCooldownMs = 1500;      // upgrades spaced out
+    this.downCooldownMs = 600;     // downgrades remain responsive
 
-    // Timing per request
+    // Optional: track rough bytes-per-pixel to sanity-check upgrades
+    this.bppWin = [];              // recent bytes-per-pixel (size / (rx*ry))
+    this.bppWinSize = 20;
+
+    // NEW: simple last measured throughput (bytes/sec)
+    this.lastThroughputBps = 0;
+
     this._t0 = null;
-
-    // Optional logs
     this.debug = true;
-
-    // Start high-compression (lowest quality) to be safe
     this.startAt = 3;
     this._initialized = false;
   }
@@ -44,92 +43,110 @@ class LatencyABR {
     return this.profile;
   }
 
-  startRequest() {
-    this._t0 = performance.now();
-  }
+  startRequest() { this._t0 = performance.now(); }
 
-  /**
-   * @param {number} _contentLengthBytes - optional, for future use
-   * @param {number} _rx - received image width (optional)
-   * @param {number} _ry - received image height (optional)
-   * @param {number} renderMs - OPTIONAL server render time in ms (from header)
-   */
-  endRequest(_contentLengthBytes = 0, _rx = 0, _ry = 0, renderMs = NaN) {
+  endRequest(contentLengthBytes = 0, rx = 0, ry = 0, renderMs = NaN) {
     if (this._t0 == null) return;
-
     const t1 = performance.now();
-    const dt = t1 - this._t0;        // total observed latency on client
+    const dt = t1 - this._t0;
     this._t0 = null;
 
-    // If server render time was sent, isolate network+browser time
     const hasServer = Number.isFinite(renderMs) && renderMs >= 0;
     const netMs = hasServer ? Math.max(1, dt - renderMs) : dt;
 
-    // Keep bounded windows
-    this.windowTotal.push(dt);
-    if (this.windowTotal.length > this.windowSize) this.windowTotal.shift();
-
-    if (hasServer) {
-      this.windowNet.push(netMs);
-      if (this.windowNet.length > this.windowSize) this.windowNet.shift();
+    // NEW: update simple throughput measurement (bytes/sec) for this request
+    if (contentLengthBytes > 0 && netMs > 0) {
+      this.lastThroughputBps = (contentLengthBytes * 1000) / netMs; // bytes/ms → B/s
     }
 
-    // Not enough samples? bail
-    const effectiveWindow = hasServer ? this.windowNet : this.windowTotal;
-    if (effectiveWindow.length < Math.min(3, this.windowSize)) {
-      if (this.debug) {
-        console.log(`[ABR] warmup total=${dt.toFixed(1)}ms`
-          + (hasServer ? ` server=${renderMs.toFixed(1)}ms net=${netMs.toFixed(1)}ms` : ''));
+    // record windows
+    this.windowTotal.push(dt); if (this.windowTotal.length > this.windowSize) this.windowTotal.shift();
+    if (hasServer) { this.windowNet.push(netMs); if (this.windowNet.length > this.windowSize) this.windowNet.shift(); }
+
+    // update bpp if we know size and dimensions
+    if (contentLengthBytes > 0 && rx > 0 && ry > 0) {
+      const bpp = contentLengthBytes / (rx * ry);
+      this.bppWin.push(bpp);
+      if (this.bppWin.length > this.bppWinSize) this.bppWin.shift();
+    }
+
+    const effective = hasServer ? this.windowNet : this.windowTotal;
+    if (effective.length < Math.min(3, this.windowSize / 2)) {
+      if (this.debug) console.log(`[ABR] warmup total=${dt.toFixed(1)}ms${hasServer ? ` server=${renderMs.toFixed(1)}ms net=${netMs.toFixed(1)}ms` : ''}`);
+      return;
+    }
+
+    const med = this._median(effective);
+    if (this.debug) {
+      if (hasServer) {
+        console.log(`[ABR] total=${dt.toFixed(1)}ms server=${renderMs.toFixed(1)}ms net=${netMs.toFixed(1)}ms med(net)=${med.toFixed(1)}ms prof=${this.profile}`);
+      } else {
+        console.log(`[ABR] total=${dt.toFixed(1)}ms med(total)=${med.toFixed(1)}ms prof=${this.profile}`);
+      }
+    }
+
+    const now = performance.now();
+    const canUp = (now - this.lastUpAt) >= this.upCooldownMs;
+    const canDown = (now - this.lastDownAt) >= this.downCooldownMs;
+
+    if (med > this.downgradeMs) {
+      this.goodStreak = 0;
+      if (canDown) this._bump(+1, "slow");
+      return;
+    }
+
+    if (med < this.upgradeMs) {
+      this.goodStreak++;
+      if (this.goodStreak >= this.needGoodCount && canUp) {
+        if (this._nextStepLooksSafe(med)) {
+          this._bump(-1, "fast-safe");
+          this.goodStreak = 0;
+        } else {
+          if (this.debug) console.log("[ABR] upgrade vetoed: next profile predicted to exceed budget");
+        }
       }
       return;
     }
 
-    const med = this._median(effectiveWindow);
+    // middle band
+    this.goodStreak = 0;
+  }
 
-    if (this.debug) {
-      if (hasServer) {
-        console.log(
-          `[ABR] total=${dt.toFixed(1)}ms server=${renderMs.toFixed(1)}ms `
-          + `net=${netMs.toFixed(1)}ms med(net)=${med.toFixed(1)}ms prof=${this.profile}`
-        );
-      } else {
-        console.log(
-          `[ABR] total=${dt.toFixed(1)}ms med(total)=${med.toFixed(1)}ms prof=${this.profile}`
-        );
-      }
-    }
+  _nextStepLooksSafe(currentMedNetMs) {
+    const next = this.profile - 1;
+    if (next < this.minProfile) return false;
 
-    // Hysteresis and cooldown
-    const now = performance.now();
-    const canChange = (now - this.lastChangeAt) >= this.changeCooldownMs;
+    // Use median BPP as a rough predictor; fall back to conservative default
+    const bpp = this.bppWin.length ? this._median(this.bppWin) : 0.0025; // bytes per pixel fallback
+    // Assume resolution increases when upgrading quality; if you know exact ladder, plug it in.
+    // If you know rx, ry for the *target* profile, estimate bytes:
+    // Here we approximate by saying next profile increases bytes by ~1.6× vs current.
+    const bytesFactor = 1.6; // tune to your ladder
+    const lastSize = this._lastContentLength || 0; // populate this from caller if available
+    const estBytes = lastSize > 0 ? lastSize * bytesFactor : (bpp * (this._lastRx || 1280) * (this._lastRy || 720)) * bytesFactor;
 
-    if (med > this.downgradeMs) {
-      this.goodStreak = 0;
-      if (canChange) this._bump(+1, "slow");
-    } else if (med < this.upgradeMs) {
-      this.goodStreak++;
-      if (this.goodStreak >= this.needGoodCount && canChange) {
-        this._bump(-1, "fast");
-        this.goodStreak = 0;
-      }
-    } else {
-      // In the middle band, reset streak
-      this.goodStreak = 0;
-    }
+    // Estimate download time by scaling with current median net time and last size
+    // If we don't have last size, use a simple proportional check vs threshold.
+    const estNetMs = lastSize > 0 ? currentMedNetMs * (estBytes / lastSize) : currentMedNetMs * bytesFactor;
+
+    // Only allow upgrade if predicted time remains below the *downgrade* budget with margin
+    const safety = 0.8; // require 20% headroom
+    return estNetMs < this.downgradeMs * safety;
   }
 
   _bump(delta, why) {
     const old = this.profile;
-    this.profile = Math.max(this.minProfile, Math.min(this.maxProfile, this.profile + delta));
-    this.lastChangeAt = performance.now();
-    if (this.debug && old !== this.profile) {
-      console.log(`[ABR] profile ${old} -> ${this.profile} (${why})`);
-    }
+    const next = Math.max(this.minProfile, Math.min(this.maxProfile, this.profile + delta));
+    if (next === old) return;
+    this.profile = next;
+    const now = performance.now();
+    if (delta < 0) this.lastUpAt = now; else this.lastDownAt = now;
+    if (this.debug) console.log(`[ABR] profile ${old} -> ${this.profile} (${why})`);
   }
 
-  _median(arr) {
-    const a = arr.slice().sort((x, y) => x - y);
-    const mid = Math.floor(a.length / 2);
-    return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
+  _median(a) {
+    const s = a.slice().sort((x, y) => x - y);
+    const m = Math.floor(s.length / 2);
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
   }
 }

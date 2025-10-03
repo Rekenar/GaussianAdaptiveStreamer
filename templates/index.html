@@ -56,7 +56,35 @@
             <label>Focal Length Y (fy):</label>
             <input type="number" id="fy" value="800" /><br />
 
+            <!-- ===== Sidebar: Record / Playback (drop-in replacement) ===== -->
+            <h3 style="margin-top:1rem;">Record</h3>
+            <div class="card">
+                <div class="btn-row">
+                    <button id="start-rec" class="btn btn-danger">● Start Recording</button>
+                    <button id="stop-rec" class="btn" disabled>Stop & Save</button>
+                </div>
+                <div id="rec-status" class="muted">Not recording</div>
+            </div>
+
+            <h3 style="margin-top:1rem;">Playback</h3>
+            <div class="card">
+                <label class="file-input">
+                    <input type="file" id="rec-file" accept=".json">
+                    <span id="file-label">Choose a recording JSON…</span>
+                </label>
+
+                <div class="btn-row">
+                    <button id="start-playback" class="btn btn-primary">Start</button>
+                </div>
+
+                <div class="progress" id="pb-wrap" hidden>
+                    <div class="progress-bar" id="pb"></div>
+                </div>
+            </div>
+
             <button class="apply-button" onclick="applyConfig()">Apply</button>
+            <!-- ===== end ===== -->
+
         </div>
     </div>
 
@@ -75,7 +103,51 @@
             </div>
         </div>
     </div>
+    <script>
+        // --- Minimal recorder state ---
+        const REC = {
+            active: false,
+            startWall: 0,
+            events: []
+        };
 
+        const btnStartRec = document.getElementById('start-rec');
+        const btnStopRec = document.getElementById('stop-rec');
+
+        btnStartRec.addEventListener('click', () => {
+            REC.active = true;
+            REC.startWall = performance.now();
+            REC.events = [];
+            btnStartRec.disabled = true;
+            btnStopRec.disabled = false;
+            console.log('[REC] started');
+        });
+
+        btnStopRec.addEventListener('click', () => {
+            if (!REC.active) return;
+            REC.active = false;
+            btnStartRec.disabled = false;
+            btnStopRec.disabled = true;
+
+            // Download JSON
+            const blob = new Blob([JSON.stringify(REC.events, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+
+            const pad = (n) => String(n).padStart(2, '0');
+            const d = new Date();
+            const fname = `recording-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}.json`;
+
+            a.href = url;
+            a.download = fname;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+
+            console.log(`[REC] saved ${REC.events.length} events`);
+        });
+    </script>
     <script>
         const ABRFactory = {
             create(kind, resSelect) {
@@ -161,7 +233,11 @@
 
             if (updated) {
                 positionDisplay.textContent = `Angle: ${angle.toFixed(0)}°, Elevation: ${elevation.toFixed(0)}°, X: ${x.toFixed(1)}, Y: ${y.toFixed(1)}, Z: ${z.toFixed(1)}`;
-                sendPosition();
+                sendPosition().then(result => {
+                    console.log("Image rendered", result);
+                }).catch(err => {
+                    console.error("Failed", err);
+                });
             }
         }
 
@@ -187,7 +263,11 @@
             document.getElementById('cx').value = cx;
             document.getElementById('cy').value = cy;
 
-            sendPosition();
+            sendPosition().then(result => {
+                console.log("Image rendered", result);
+            }).catch(err => {
+                console.error("Failed", err);
+            });
         }
 
         function toggleSidebar() {
@@ -195,115 +275,202 @@
         }
 
         function sendPosition() {
-            isLoading = true;
+            return new Promise((resolve, reject) => {
+                isLoading = true;
 
-            const abrEnabled = abrToggle.checked;
-            let profile = 0;
-            if (abrEnabled) {
-                profile = abr.pickProfile(width, height);   // decide for this request
-                abr.startRequest(profile, width, height);   // timestamp the request
-            }
+                const abrEnabled = abrToggle.checked;
+                let profile = 0;
+                if (abrEnabled) {
+                    profile = abr.pickProfile(width, height);   // decide for this request
+                    abr.startRequest(profile, width, height);   // timestamp the request
+                }
 
-            const tFetchStart = performance.now();
+                const tFetchStart = performance.now();
 
-            fetch('/render', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile
-                }),
-            })
-                .then(async (response) => {
-                    // Read headers *before* consuming the body
-                    const contentLength = Number(response.headers.get('Content-Length') || 0);
-                    const renderHeader = response.headers.get('X-Render-Time-Ms');
-                    const renderMs = renderHeader != null ? parseFloat(renderHeader) : NaN;
-
-                    // Consume the body
-                    const blob = await response.blob();
-
-                    // Provide both header data + blob downstream
-                    return { blob, contentLength, renderMs };
+                fetch('/render', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile
+                    }),
                 })
-                .then(({ blob, contentLength, renderMs }) => {
-                    const imgUrl = URL.createObjectURL(blob);
-                    const img = new Image();
+                    .then(async (response) => {
+                        const contentLength = Number(response.headers.get('Content-Length') || 0);
+                        const renderHeader = response.headers.get('X-Render-Time-Ms');
+                        const renderMs = renderHeader != null ? parseFloat(renderHeader) : NaN;
 
-                    img.onload = () => {
-                        const displayW = Math.round(width);
-                        const displayH = Math.round(height);
+                        const blob = await response.blob();
+                        return { blob, contentLength, renderMs };
+                    })
+                    .then(({ blob, contentLength, renderMs }) => {
+                        const imgUrl = URL.createObjectURL(blob);
+                        const img = new Image();
 
-                        const rx = img.naturalWidth;
-                        const ry = img.naturalHeight;
+                        img.onload = () => {
+                            const displayW = Math.round(width);
+                            const displayH = Math.round(height);
 
-                        const scale = window.devicePixelRatio || 1;
-                        const canvas = document.createElement('canvas');
-                        canvas.width = displayW * scale;
-                        canvas.height = displayH * scale;
-                        canvas.style.width = displayW + 'px';
-                        canvas.style.height = displayH + 'px';
+                            const rx = img.naturalWidth;
+                            const ry = img.naturalHeight;
 
-                        const ctx = canvas.getContext('2d', { alpha: false });
-                        ctx.imageSmoothingEnabled = true;
-                        ctx.imageSmoothingQuality = 'high';
-                        ctx.scale(scale, scale);
+                            const scale = window.devicePixelRatio || 1;
+                            const canvas = document.createElement('canvas');
+                            canvas.width = displayW * scale;
+                            canvas.height = displayH * scale;
+                            canvas.style.width = displayW + 'px';
+                            canvas.style.height = displayH + 'px';
 
-                        ctx.drawImage(img, 0, 0, rx, ry, 0, 0, displayW, displayH);
+                            const ctx = canvas.getContext('2d', { alpha: false });
+                            ctx.imageSmoothingEnabled = true;
+                            ctx.imageSmoothingQuality = 'high';
+                            ctx.scale(scale, scale);
 
-                        objectViewer.innerHTML = '';
-                        objectViewer.appendChild(canvas);
+                            ctx.drawImage(img, 0, 0, rx, ry, 0, 0, displayW, displayH);
 
-                        isLoading = false;
+                            objectViewer.innerHTML = '';
+                            objectViewer.appendChild(canvas);
 
-                        if (abrEnabled) {
-                            // Prefer header Content-Length, fallback to blob.size if needed
-                            const bytes = contentLength || blob.size || 0;
+                            isLoading = false;
 
-                            // Pass server render time (ms) as optional 4th arg.
-                            // Your ABR can read it if implemented; otherwise it’s ignored.
-                            abr.endRequest(bytes, rx, ry, renderMs);
-                        }
+                            if (abrEnabled) {
+                                const bytes = contentLength || blob.size || 0;
+                                abr.endRequest(bytes, rx, ry, renderMs);
+                            }
 
-                        if (!Number.isNaN(renderMs)) {
-                            const el = document.getElementById('render-ms');
-                            if (el) el.textContent = renderMs.toFixed(2);
-                        }
+                            if (typeof REC !== 'undefined' && REC.active) {
+                                const tMs = Math.round(tFetchStart - REC.startWall);
+                                const durationMs = Math.round(performance.now() - tFetchStart);
+                                REC.events.push({
+                                    tMs, durationMs,
+                                    angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile
+                                });
+                            }
 
-                        URL.revokeObjectURL(imgUrl);
-                    };
+                            if (!Number.isNaN(renderMs)) {
+                                const el = document.getElementById('render-ms');
+                                if (el) el.textContent = renderMs.toFixed(2);
+                            }
 
-                    img.onerror = () => {
+                            URL.revokeObjectURL(imgUrl);
+                            resolve({ blob, renderMs, width, height, profile });
+                        };
+
+                        img.onerror = () => {
+                            objectViewer.innerHTML = '<p>Error loading image</p>';
+                            isLoading = false;
+                            if (abrEnabled) abr.endRequest(0);
+                            URL.revokeObjectURL(imgUrl);
+                            reject(new Error("Image load failed"));
+                        };
+
+                        img.src = imgUrl;
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
                         objectViewer.innerHTML = '<p>Error loading image</p>';
                         isLoading = false;
                         if (abrEnabled) abr.endRequest(0);
-                        URL.revokeObjectURL(imgUrl);
-                    };
-
-                    img.src = imgUrl;
-                })
-                .catch(error => {
-                    console.error('Error:', error);
-                    objectViewer.innerHTML = '<p>Error loading image</p>';
-                    isLoading = false;
-                    if (abrEnabled) abr.endRequest(0);
-                });
+                        reject(error);
+                    });
+            });
         }
 
 
+
         function updateImage() {
-            sendPosition();
+            sendPosition().then(result => {
+                console.log("Image rendered", result);
+            }).catch(err => {
+                console.error("Failed", err);
+            });
         }
 
         // Load initial image and start the loop
         updateImage();
         update();
-
-
-
-
-
-
     </script>
+    <script>
+        const fileInput = document.getElementById('rec-file');
+        const startBtn = document.getElementById('start-playback');
+
+        async function reportPred(id, pred_bps, profile) {
+            try {
+                await fetch("/metrics/predict", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    cache: "no-store",
+                    body: JSON.stringify({
+                        expId: id,
+                        pred_bps,
+                        profile
+                    })
+                });
+            } catch (e) {
+                console.warn("[predict] post failed", e);
+            }
+        }
+
+        // Helper: wait until absolute timestamp
+        async function waitUntil(startAt) {
+            let delay = startAt - Date.now();
+            if (delay > 0) {
+                console.log(`[playback] Waiting ${delay} ms until start...`);
+                return new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+
+        startBtn.addEventListener('click', async () => {
+            const file = fileInput?.files?.[0];
+            if (!file) { alert('Select a JSON file first.'); return; }
+
+            try {
+                startBtn.disabled = true;
+
+                // 1. Pick a timestamp a few seconds in the future
+                const startAt = Date.now() + 5000;
+
+                // 2. Tell the server to wait and launch bandwidth script at that timestamp
+                await fetch("/playback/start", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ startAt })
+                });
+
+                // 3. Locally wait until the same timestamp
+                await waitUntil(startAt);
+                console.log("[playback] START at", new Date().toISOString());
+
+                // --- Now start playback normally ---
+                const text = await file.text();
+                let events = JSON.parse(text);
+                events = Array.isArray(events) ? events : (events.events || []);
+                if (!events.length) throw new Error('No events in file');
+                let id = 0;
+                for (const ev of events) {
+                    if (ev.angle != null) angle = Number(ev.angle);
+                    if (ev.elevation != null) elevation = Number(ev.elevation);
+                    if (ev.x != null) x = Number(ev.x);
+                    if (ev.y != null) y = Number(ev.y);
+                    if (ev.z != null) z = Number(ev.z);
+
+
+                    await sendPosition();
+                    const predictedBps = abr.lastThroughputBps;
+                    const profileIdx = abr.profile;
+
+                    await reportPred(id, predictedBps, profileIdx);
+
+                }
+
+            } catch (err) {
+                console.error(err);
+                alert('Playback failed: ' + err.message);
+            } finally {
+                startBtn.disabled = false;
+            }
+        });
+    </script>
+
 </body>
 
 </html>
