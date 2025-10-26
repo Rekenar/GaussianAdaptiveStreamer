@@ -25,6 +25,9 @@ class LatencyABR {
     this.bppWin = [];               // recent bytes-per-pixel (size / (rx*ry))
     this.bppWinSize = 20;
 
+
+    this.lastThroughputBps = 0;
+
     this._t0 = null;
     this.debug = true;
     this.startAt = 3;
@@ -50,6 +53,14 @@ class LatencyABR {
 
     const hasServer = Number.isFinite(renderMs) && renderMs >= 0;
     const netMs = hasServer ? Math.max(1, dt - renderMs) : dt;
+
+    console.log("Content:" + contentLengthBytes);
+    console.log("Net MS: " + netMs);
+
+    if (contentLengthBytes > 0 && netMs > 0) {
+      this.lastThroughputBps = (contentLengthBytes / 1000) / (netMs / 1000); // Bytes per second
+      console.log(`[ABR] throughput = ${this.lastThroughputBps.toFixed(1)} B/s`);
+    }
 
     // record windows
     this.windowTotal.push(dt); if (this.windowTotal.length > this.windowSize) this.windowTotal.shift();

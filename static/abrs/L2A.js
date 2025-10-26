@@ -1,181 +1,345 @@
 // /static/abr_l2a.js
 class L2A_ABR {
   /**
-   * L2A-LL style ABR for request/response image rendering.
-   * Online-learning (multiplicative weights / EXP3-like) over discrete profiles.
-   * Now server-aware: consumes server render time to isolate network+browser latency.
+   * L2A-LL-ish
+   *
+   * Profiles: 0 = best quality (largest), 3 = lowest quality (smallest)
    */
   constructor(_resolutionSelect) {
-    // Profiles: 0=best quality, 3=lowest
+    // ----- Ladder / resolution ------------------------------------------------
     this.minProfile = 0;
     this.maxProfile = 3;
-    this.profile = 3;                 // conservative start
-    this.scaleLadder = [1.0, 0.75, 0.5, 0.35];
+    this.profile = 3;
+    this.scaleLadder = [1.0, 0.75, 0.5, 0.35]; // not strictly needed, kept for consistency
 
-    // Online-learning state
-    const K = this.maxProfile - this.minProfile + 1;
-    this.K = K;
-    this.weights = Array(K).fill(1);  // multiplicative weights
-    this.gamma = 0.05;                // exploration
-    this.eta = 0.25;                  // learning rate
+    // Resolution (if you change size in UI, call setResolution)
+    this.width = 800;
+    this.height = 600;
 
-    // Runtime stats (rolling)
-    this.windowSize   = 12;
-    this.latTotal     = [];           // total wall time (ms)
-    this.latServer    = [];           // server render time (ms)
-    this.latNet       = [];           // client/network time = total - server (ms)
-    this.thrBytesPerMsNet = [];       // bytes / netMs (throughput estimate)
-    this.lastBytes    = 0;
+    // ----- Bandit (EXP3) state ----------------------------------------------
+    this.K = this.maxProfile - this.minProfile + 1;
+    this.logW = Array(this.K).fill(0.0); // log-weights
+    this.gamma = 0.10; // exploration mass
+    this.eta = 0.10;   // learning rate
 
-    // QoE / loss shaping
-    this.latencyTargetMs = 120;       // end-to-end target
-    this.aOvershoot = 2.0;            // weight for overshoot (stall risk)     [total]
-    this.bLatency   = 0.5;            // gentle pressure on absolute latency   [total]
-    this.bNet       = 0.35;           // gentle pressure on net time           [net]
-    this.sSwitch    = 0.4;            // smoothness (penalize switches)
-    this.qQuality   = 0.8;            // prefer visual quality
+    // ----- Rolling stats -----------------------------------------------------
+    this.windowSize = 30;
+    this.latTotal = [];   // ms
+    this.latServer = [];  // ms
+    this.latNet = [];     // ms
+    this.thrBytesPerMsNet = []; // bytes/ms (network only)
 
-    // Stability
-    this.cooldownMs = 350;
+    // ----- QoE / budgets -----------------------------------------------------
+    this.latencyTargetMs = 120; // END-TO-END target
+    this.minNetBudgetMs = 20;   // don’t let dynamic net budget collapse to 0
+
+    // Loss shaping (NETWORK-ONLY)
+    this.aOvershoot = 2.0;
+    this.bLatency = 0.5;
+    this.sSwitch = 0.35;
+    this.qQuality = 0.55;
+
+    // ----- Stability guards --------------------------------------------------
+    this.cooldownMs = 250;
     this.lastChangeAt = 0;
-    this.upgradeMargin = 0.1;         // require margin to upgrade quality
 
-    // Misc
+    // ----- Exploration decay -------------------------------------------------
+    this.clicks = 0;
+    this.gammaMin = 0.02;
+    this.gammaDecay = 0.98; // every 12 clicks
+
+    // ----- Bytes model -------------------------------------------------------
+    // bytes ≈ K * pixels / 2^profile ; K learned from last sample
+    this.lastBytes = 12000;     // bootstrap
+    this.lastProfile = this.profile;
+    this.lastPixels = this.width * this.height;
+
+    // ----- Misc --------------------------------------------------------------
     this._t0 = null;
     this.prevProfile = undefined;
-    this.debug = false;
+    this.debug = true;
+
+    // Cached from last pick for unbiased loss if you keep it
+    this._lastProbs = Array(this.K).fill(1 / this.K);
+    this._lastPChosen = 1.0;
   }
 
-  pickProfile() {
-    // Convert weights -> probabilities
-    const probs = this._probsFromWeights();
-    const best = this._argmax(probs);
+  setResolution(w, h) {
+    if (w > 0 && h > 0) {
+      this.width = w; this.height = h;
+    }
+  }
 
-    // Cooldown & hysteresis (avoid rapid flips)
+  // ==========================================================================
+  // Public API
+  // ==========================================================================
+  pickProfile() {
     const now = performance.now();
     const canChange = (now - this.lastChangeAt) >= this.cooldownMs;
-    if (!canChange && best !== this.profile) return this.profile;
 
-    // Only upgrade quality if clearly better
-    if (best < this.profile) {
-      if (probs[best] - probs[this.profile] < this.upgradeMargin) return this.profile;
+    // Dynamic network budget
+    const medServer = this._median(this.latServer) || this._serverDefault();
+    const netBudget = Math.max(this.minNetBudgetMs, this.latencyTargetMs - medServer);
+
+    // Throughput distribution (log-domain)
+    const { mu, sigma } = this._fitLogThr();
+    // Bytes model coefficient (profile 0 baseline)
+    const K = this._bytesPerPixelCoef();
+    const pixels = this.width * this.height;
+
+    // EXP3 base probabilities
+    let probs = this._probsFromLogWeights();
+    this._lastProbs = probs.slice();
+
+    // ---- Safety mask (risk-aware feasibility) -------------------------------
+    // For each candidate profile p, forecast bytes & net time at a conservative quantile;
+    // estimate risk ≈ P(total > target) using log-normal tail on throughput.
+    const safety = [];
+    const riskCap = 0.60;      // reject arms with high tail risk
+    const headroom = 1.07;     // allow a tiny slack vs target (2%)
+    for (let p = this.minProfile; p <= this.maxProfile; p++) {
+      const bytes = this._bytesFor(p, K, pixels);
+      const { expectTotal, risk } = this._riskAndExpect(bytes, mu, sigma, medServer, netBudget);
+      const ok = (risk <= riskCap) && (expectTotal <= headroom * this.latencyTargetMs);
+      safety.push(ok ? 1 : 0);
     }
 
-    this.profile = best;
-    this.lastChangeAt = now;
+    // If all arms masked (can happen at very low bandwidth), keep only the safest
+    if (safety.every(x => x === 0)) {
+      // let the least-risk arm survive
+      let bestP = this.profile, bestR = +Infinity;
+      for (let p = this.minProfile; p <= this.maxProfile; p++) {
+        const r = this._riskForP(p, K, pixels, mu, sigma, medServer, netBudget);
+        if (r < bestR) { bestR = r; bestP = p; }
+      }
+      const mask = Array(this.K).fill(0); mask[this.profileIndex(bestP)] = 1;
+      probs = this._renorm(probs.map((p, i) => p * mask[i]));
+    } else {
+      probs = this._renorm(probs.map((p, i) => p * safety[i]));
+    }
+
+    // If we cannot change yet, deterministically keep current
+    if (!canChange) {
+      this._lastPChosen = 1.0;
+      return this.profile;
+    }
+
+    // Sample from masked probs
+    const candidate = this._pickByProbs(probs);
+    this._lastPChosen = Math.max(1e-6, probs[this.profileIndex(candidate)]);
+
+    if (candidate !== this.profile) {
+      this.prevProfile = this.profile;
+      this.profile = candidate;
+      this.lastChangeAt = now;
+    }
+
+    // downgrade guard
+    if (candidate > this.profile && this.latNet.length >= 2) {
+      const L = this.latNet;
+      const medServer = this._median(this.latServer) || this._serverDefault();
+      const netBudget = Math.max(this.minNetBudgetMs, this.latencyTargetMs - medServer);
+      const bad2 = L[L.length - 1] > 0.9 * netBudget && L[L.length - 2] > 0.9 * netBudget;
+      if (!bad2) { // veto downgrade once
+        // re-sample among non-downgrade arms (keep current or upgrade)
+        const probs = this._lastProbs.slice();
+        // zero out strictly lower-quality arms
+        for (let p = this.profile + 1; p <= this.maxProfile; p++) probs[this.profileIndex(p)] = 0;
+        const ren = this._renorm(probs);
+        const c2 = this._pickByProbs(ren);
+        if (c2 <= this.profile) candidate = c2;
+      }
+    }
+
+
+    // Gentle exploration decay as we learn
+    this.clicks++;
+    if (this.clicks % 12 === 0) {
+      this.gamma = Math.max(this.gammaMin, this.gamma * this.gammaDecay);
+    }
     return this.profile;
   }
 
   startRequest() { this._t0 = performance.now(); }
 
-  /**
-   * @param {number} contentLengthBytes
-   * @param {number} _rx (unused)
-   * @param {number} _ry (unused)
-   * @param {number} renderMs OPTIONAL server render time (from X-Render-Time-Ms)
-   */
   endRequest(contentLengthBytes = 0, _rx = 0, _ry = 0, renderMs = NaN) {
     if (this._t0 == null) return;
-    const dtTotal = performance.now() - this._t0; // observed end-to-end time (ms)
+
+    const dtTotal = performance.now() - this._t0;
     this._t0 = null;
 
     const hasServer = Number.isFinite(renderMs) && renderMs >= 0;
-    const dtNet = hasServer ? Math.max(1, dtTotal - renderMs) : dtTotal;
+    const netMs = hasServer ? Math.max(1, dtTotal - renderMs) : dtTotal;
 
-    if (contentLengthBytes > 0) this.lastBytes = contentLengthBytes;
-
-    // Update rolling stats
+    // Rolling stats
     this._push(this.latTotal, dtTotal);
-    if (hasServer) {
-      this._push(this.latServer, renderMs);
-      this._push(this.latNet, dtNet);
-      if (contentLengthBytes > 0) this._push(this.thrBytesPerMsNet, contentLengthBytes / dtNet);
-    } else {
-      if (contentLengthBytes > 0) this._push(this.thrBytesPerMsNet, contentLengthBytes / dtTotal);
+    if (hasServer) this._push(this.latServer, renderMs);
+    this._push(this.latNet, netMs);
+
+    if (contentLengthBytes > 0) {
+      this.lastBytes = contentLengthBytes;
+      this.lastProfile = this.profile;
+      this.lastPixels = this.width * this.height;
+      this._push(this.thrBytesPerMsNet, contentLengthBytes / netMs);
     }
 
-    // Compute realized loss (bandit feedback) for the chosen action only
-    const lossChosen = this._lossFromObservation(dtTotal, dtNet, this.profile);
+    // Dynamic network budget for loss
+    const medServer = this._median(this.latServer) || this._serverDefault();
+    const netBudget = Math.max(this.minNetBudgetMs, this.latencyTargetMs - medServer);
 
-    // EXP3-style update
-    const probs = this._probsFromWeights();
-    const idx = this.profileIndex(this.profile);
-    const pChosen = Math.max(1e-6, probs[idx]);
+    // Bandit loss from *network-only* time normalized by netBudget
+    const usedProfile = this.profile;
+    const lossChosen = this._lossFromNetObservation(netMs, usedProfile, netBudget);
+
+    // EXP3 update (unbiased)
+    const pChosen = Math.max(1e-6, this._lastPChosen);
     const unbiasedLoss = lossChosen / pChosen;
-    this.weights[idx] *= Math.exp(-this.eta * unbiasedLoss);
+    const idx = this.profileIndex(usedProfile);
+    this.logW[idx] += (-this.eta * unbiasedLoss);
 
-    // Cap weights to avoid numeric blow-up
-    const cap = 1e6;
-    for (let i = 0; i < this.K; i++) this.weights[i] = Math.min(this.weights[i], cap);
+    // recentre to keep numbers sane
+    const maxLogW = Math.max(...this.logW);
+    for (let i = 0; i < this.K; i++) this.logW[i] -= maxLogW;
 
     if (this.debug) {
-      if (hasServer) {
-        const thr = this.thrBytesPerMsNet.length ? this._median(this.thrBytesPerMsNet) : 0;
-        console.log(`[L2A] total=${dtTotal.toFixed(1)}ms server=${renderMs.toFixed(1)}ms `
-          + `net=${dtNet.toFixed(1)}ms thr=${thr.toFixed(3)} B/ms `
-          + `loss=${lossChosen.toFixed(3)} w=${this.weights.map(w=>w.toFixed(2))}`);
-      } else {
-        console.log(`[L2A] total=${dtTotal.toFixed(1)}ms (server N/A) `
-          + `loss=${lossChosen.toFixed(3)} w=${this.weights.map(w=>w.toFixed(2))}`);
-      }
+      const thrMed = this.thrBytesPerMsNet.length ? this._median(this.thrBytesPerMsNet) : 0;
+      console.log(
+        `[L2A] net=${netMs.toFixed(1)}ms tot=${dtTotal.toFixed(1)}ms `
+        + (hasServer ? `srv=${renderMs.toFixed(1)}ms ` : ``)
+        + `netBudget=${netBudget.toFixed(1)}ms `
+        + `loss=${lossChosen.toFixed(3)} p=${pChosen.toFixed(3)} `
+        + `thrMed=${thrMed.toFixed(3)}B/ms prof=${usedProfile}`
+      );
     }
   }
 
-  // ---- Loss model (lower is better) ----------------------------------------
-  _lossFromObservation(dtTotalMs, dtNetMs, usedProfile) {
-    const t = this.latencyTargetMs;
-
-    // End-to-end pressure: overshoot + absolute total latency
-    const over = Math.max(0, dtTotalMs - t) / t;    // stall risk vs target
-    const lat  = dtTotalMs / t;
-
-    // Network-only pressure: prefer actions that reduce network+browser time
-    const net  = dtNetMs / t;
-
-    // Smoothness penalty
+  // ==========================================================================
+  // Loss model (NETWORK-ONLY) relative to *dynamic* netBudget; [0,1]
+  // ==========================================================================
+  _lossFromNetObservation(netMs, usedProfile, netBudgetMs) {
+    const t = Math.max(1, netBudgetMs);
+    const over = Math.max(0, netMs - t) / t;
+    const lat = netMs / t;
     const switchPenalty = (usedProfile !== this.prevProfile) ? 1 : 0;
-
-    // Quality penalty (higher when quality is low)
     const qual = 1 - this._qualityReward(usedProfile);
 
-    // Remember for next round
-    this.prevProfile = usedProfile;
+    const overC = Math.min(1, over);
+    const latC = Math.min(1, lat);
 
-    return this.aOvershoot * over
-         + this.bLatency   * lat
-         + this.bNet       * net
-         + this.sSwitch    * switchPenalty
-         + this.qQuality   * qual;
+    let L = this.aOvershoot * overC + this.bLatency * latC + this.sSwitch * switchPenalty + this.qQuality * qual;
+    const norm = (this.aOvershoot + this.bLatency + this.sSwitch + this.qQuality) || 1;
+    L = Math.min(1, Math.max(0, L / norm));
+
+    this.prevProfile = usedProfile;
+    return L;
+  }
+
+  // ==========================================================================
+  // Safety / forecasting helpers
+  // ==========================================================================
+  _bytesFor(p, K, pixels) {
+    // bytes ≈ K * pixels / 2^profile
+    return Math.max(1024, Math.round(K * pixels / Math.pow(2, p)));
+  }
+
+  _bytesPerPixelCoef() {
+    // K ≈ bytes * 2^profile / pixels  (learn from last sample)
+    const px = this.lastPixels || (this.width * this.height);
+    if (px > 0) return Math.max(0.05, (this.lastBytes * Math.pow(2, this.lastProfile)) / px);
+    return 0.2;
+  }
+
+  _serverDefault() {
+    // 40–60 ms typical; scale mildly with area vs 800x600
+    const base = 40, refPx = 800 * 600, px = this.width * this.height;
+    return base + 20 * Math.min(2.0, px / refPx);
+  }
+
+  _fitLogThr() {
+    const arr = this.thrBytesPerMsNet;
+    if (!arr.length) return { mu: Math.log(100), sigma: 0.7 }; // ~100 B/ms prior
+    const z = arr.map(x => Math.log(Math.max(x, 1e-6)));
+    const n = z.length;
+    const mu = z.reduce((a, b) => a + b, 0) / n;
+    const var_ = z.reduce((a, b) => a + (b - mu) * (b - mu), 0) / Math.max(1, n - 1);
+    return { mu, sigma: Math.sqrt(Math.max(var_, 1e-6)) };
+  }
+
+  _riskAndExpect(bytes, mu, sigma, medServer, netBudget) {
+    // Expectation via conservative quantile (≈20th percentile)
+    const c = 0.84;
+    const thr_q = Math.exp(mu - c * sigma); // bytes/ms
+    const expectedNetMs = bytes / Math.max(thr_q, 1e-6);
+    const expectTotal = expectedNetMs + medServer;
+
+    // Risk: P(total > target) ≈ P(thr < bytes / (target - medServer))
+    let risk = 1.0;
+    const needNet = Math.max(1, this.latencyTargetMs - medServer);
+    if (sigma > 1e-6) {
+      const y = Math.log(bytes / needNet);
+      const t = (y - mu) / sigma;
+      risk = this._stdNormCdf(t);
+    } else {
+      risk = (Math.exp(mu) < (bytes / needNet)) ? 1.0 : 0.0;
+    }
+    return { expectTotal, risk: this._clamp(risk, 0, 1) };
+  }
+
+  _riskForP(p, K, pixels, mu, sigma, medServer, netBudget) {
+    const bytes = this._bytesFor(p, K, pixels);
+    return this._riskAndExpect(bytes, mu, sigma, medServer, netBudget).risk;
   }
 
   _qualityReward(p) {
-    // Map profile -> [0..1] reward; tie to VMAF/PSNR buckets if available.
-    const rewards = [1.0, 0.82, 0.6, 0.4];
-    return rewards[p] ?? 0.3;
+    // Approximate perceptual quality ~ 1 / (1 + 0.6 * p)
+    return 1 / (1 + 0.6 * p);
   }
 
-  // ---- Probabilities & helpers ---------------------------------------------
-  _probsFromWeights() {
-    // EXP3-style mixing with exploration gamma
-    const sumW = this.weights.reduce((a,b)=>a+b, 0) || 1;
-    const base = this.weights.map(w => w / sumW);
+
+
+  // ==========================================================================
+  // EXP3 plumbing and utils
+  // ==========================================================================
+  _probsFromLogWeights() {
+    const maxL = Math.max(...this.logW);
+    const w = this.logW.map(L => Math.exp(L - maxL));
+    const sumW = w.reduce((a, b) => a + b, 0) || 1;
+    const base = w.map(x => x / sumW);
+
+    // ε-mix with gamma
     const eps = this.gamma / this.K;
-    return base.map(p => (1 - this.gamma) * p + eps);
+    const mixed = base.map(p => (1 - this.gamma) * p + eps);
+    return this._renorm(mixed);
+  }
+
+  _pickByProbs(probs) {
+    const r = Math.random(); let c = 0;
+    for (let i = 0; i < probs.length; i++) { c += probs[i]; if (r <= c) return this.minProfile + i; }
+    return this.maxProfile;
+  }
+
+  _renorm(arr) {
+    const s = arr.reduce((a, b) => a + b, 0) || 1;
+    return arr.map(x => x / s);
   }
 
   profileIndex(p) { return p - this.minProfile; }
 
-  _argmax(arr) {
-    let bi = 0, bv = -Infinity;
-    for (let i = 0; i < arr.length; i++) if (arr[i] > bv) { bv = arr[i]; bi = i; }
-    return this.minProfile + bi;
-  }
-
   _push(a, v) { a.push(v); if (a.length > this.windowSize) a.shift(); }
 
   _median(arr) {
-    const a = arr.slice().sort((x,y)=>x-y);
-    const m = Math.floor(a.length/2);
-    return a.length % 2 ? a[m] : (a[m-1] + a[m]) / 2;
+    if (!arr.length) return 0;
+    const a = arr.slice().sort((x, y) => x - y);
+    const m = a.length >> 1;
+    return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+  }
+
+  _clamp(x, lo, hi) { return Math.min(Math.max(x, lo), hi); }
+
+  _stdNormCdf(t) {
+    // Abramowitz–Stegun
+    const b1 = 0.31938153, b2 = -0.356563782, b3 = 1.781477937, b4 = -1.821255978, b5 = 1.330274429, p = 0.2316419, c = 0.39894228;
+    if (t >= 0) { const k = 1 / (1 + p * t); return 1 - c * Math.exp(-t * t / 2) * k * (b1 + k * (b2 + k * (b3 + k * (b4 + k * b5)))); }
+    return 1 - this._stdNormCdf(-t);
   }
 }

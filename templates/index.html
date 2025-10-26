@@ -429,35 +429,12 @@
             }
         }
 
-        // Helper: wait until absolute timestamp
-        async function waitUntil(startAt) {
-            let delay = startAt - Date.now();
-            if (delay > 0) {
-                console.log(`[playback] Waiting ${delay} ms until start...`);
-                return new Promise(resolve => setTimeout(resolve, delay));
-            }
-        }
-
         startBtn.addEventListener('click', async () => {
             const file = fileInput?.files?.[0];
             if (!file) { alert('Select a JSON file first.'); return; }
 
             try {
                 startBtn.disabled = true;
-
-                // 1. Pick a timestamp a few seconds in the future
-                const startAt = Date.now() + 5000;
-
-                // 2. Tell the server to wait and launch bandwidth script at that timestamp
-                await fetch("/playback/start", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ startAt })
-                });
-
-                // 3. Locally wait until the same timestamp
-                await waitUntil(startAt);
-                console.log("[playback] START at", new Date().toISOString());
 
                 // --- Now start playback normally ---
                 const text = await file.text();
@@ -475,11 +452,12 @@
                     positionDisplay.textContent = `Angle: ${angle.toFixed(0)}°, Elevation: ${elevation.toFixed(0)}°, X: ${x.toFixed(1)}, Y: ${y.toFixed(1)}, Z: ${z.toFixed(1)}`;
 
                     await sendPosition();
-                    //const predictedBps = abr.lastThroughputBps;
-                    //const profileIdx = abr.profile;
+                    const predictedBps = abr.lastThroughputBps;
+                    const profileIdx = abr.profile;
 
-                    //await reportPred(id, predictedBps, profileIdx);
+                    console.log(predictedBps, profileIdx)
 
+                    await reportPred(id, predictedBps, profileIdx);
                 }
 
             } catch (err) {

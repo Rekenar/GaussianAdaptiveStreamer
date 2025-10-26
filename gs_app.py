@@ -1,7 +1,7 @@
 # gs_app.py
 
 '''
-python http3_server.py --certificate certificates/ssl_cert.pem --private-key certificates/ssl_key.pem
+python http3_server.py --certificate certificates/ssl_cert.pem --private-key certificates/ssl_key.pem --host 0.0.0.0
 '''
 '''
  google-chrome \
@@ -12,7 +12,7 @@ python http3_server.py --certificate certificates/ssl_cert.pem --private-key cer
 '''
 
 
-import io, os, asyncio, json, time, subprocess
+import io, os, asyncio, json, time, subprocess, re
 import numpy as np
 from plyfile import PlyData
 import torch
@@ -213,39 +213,26 @@ async def render_handler(request: Request):
             "X-Render-Time-Ms": f"{render_ms:.2f}"
         },
     )
-    
-# POST /playback/start
-# body: { "startAt": 1730551234567 }
-async def start_playback(request):
+
+
+def get_current_kbps(dev: str = "wlp82s0") -> float | None:
+    """
+    Reads the current HTB class rate (in kbit/s) for the given network interface.
+
+    Returns:
+        float: current rate in kbit/s if found, otherwise None
+    """
     try:
-        body = await request.json()
-        start_at = int(body.get("startAt"))
+        out = subprocess.run(["tc", "class", "show", "dev", dev],
+                             capture_output=True, text=True, check=False)
+        text = out.stdout.strip() or out.stderr.strip()
+        # Example line: "class htb 1:1 root rate 1200Kbit ceil 1200Kbit burst 15Kb ..."
+        match = re.search(r"rate\s+([\d.]+)\s*Kbit", text, re.IGNORECASE)
+        if match:
+            return float(match.group(1))
     except Exception as e:
-        print(f"[playback] Invalid JSON",  flush=True)
-        return PlainTextResponse("Invalid JSON", status_code=400)
-
-    now = int(time.time() * 1000)
-    wait_ms = start_at - now
-    print(f"[playback] Request received. startAt={start_at} (epoch ms), now={now}, "
-          f"waiting {max(wait_ms,0)} ms", flush=True)
-
-    while True:
-        delay = start_at - int(time.time() * 1000)
-        if delay <= 0:
-            break
-        time.sleep(min(delay / 1000.0, 0.5))
-
-    print(f"[playback] Starting bandwidth script at {int(time.time() * 1000)} (reached startAt)", flush=True)
-
-    cmd = ["python3", "bandwidth_fluctuations.py"]
-    try:
-        proc = subprocess.Popen(cmd)
-        print(f"[playback] Script launched with PID {proc.pid}", flush=True)
-        return JSONResponse({"ok": True, "pid": proc.pid, "startAt": start_at})
-    except Exception as e:
-        print(f"[playback] Failed to launch script", flush=True)
-        return PlainTextResponse("Failed to start script", status_code=500)
-
+        print(f"[tc error on {dev}]: {e}")
+    return None
 
 
 BASE_DIR = "experiments"
@@ -265,6 +252,7 @@ async def metrics_predict(request):
         exp_id    = str(body["expId"])
         pred_bps  = float(body["pred_bps"])
         profile   = body.get("profile")
+        tc_status = get_current_kbps("wlp82s0")
     except Exception as e:
         return PlainTextResponse(f"Invalid JSON: {e}", status_code=400)
 
@@ -275,7 +263,8 @@ async def metrics_predict(request):
         "t_server": now_ms(),
         "expId": exp_id,
         "pred_bps": pred_bps,
-        "profile": profile
+        "profile": profile,
+        "tc_status" : tc_status
     }
     with open(out_path, "a", buffering=1) as f:
         f.write(json.dumps(rec) + "\n")
@@ -288,7 +277,6 @@ starlette = Starlette(
     routes=[
         Route("/", home, methods=["GET"]),
         Route("/render", render_handler, methods=["POST"]),
-        Route("/playback/start", start_playback, methods=["POST"]),
         Route("/metrics/predict", metrics_predict, methods=["POST"]),
         Mount("/static", StaticFiles(directory=STATIC_DIR), name="static"),
     ]
