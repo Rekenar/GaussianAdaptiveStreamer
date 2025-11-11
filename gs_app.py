@@ -93,7 +93,6 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
                       [0, fy, cy],
                       [0, 0, 1]], dtype=torch.float32, device=device).unsqueeze(0)
 
-    # --- timing start (sync first if on CUDA) ---
     if device.type == "cuda":
         torch.cuda.synchronize()
     t0 = time.perf_counter()
@@ -132,7 +131,6 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
     pil_img.save(buf, format="JPEG", quality=70)
     buf.seek(0)
 
-    # --- timing end (sync again for accurate GPU timing) ---
     if device.type == "cuda":
         torch.cuda.synchronize()
     t1 = time.perf_counter()
@@ -144,22 +142,13 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
     return buf.getvalue(), render_ms
 
 def save_render_bytes(jpeg_bytes: bytes, out_dir: str = "captures", base_name: str | None = None) -> str:
-    """
-    Save a JPEG byte buffer to disk and return the absolute file path.
-
-    - out_dir is created if it doesn't exist (relative to this file by default).
-    - base_name (without directories) can be provided; otherwise a timestamped name is used.
-    """
-    # Make out_dir absolute (under project root by default)
     out_dir_abs = out_dir if os.path.isabs(out_dir) else os.path.join(ROOT, out_dir)
     os.makedirs(out_dir_abs, exist_ok=True)
 
     if not base_name:
-        # Unique, timestamped filename with millisecond precision
         ts_ms = int(time.time() * 1000)
         base_name = f"frame-{ts_ms}.jpg"
 
-    # Ensure we only write under out_dir (no path traversal)
     base_name = os.path.basename(base_name)
     out_path = os.path.join(out_dir_abs, base_name)
 
@@ -191,13 +180,10 @@ async def render_handler(request: Request):
 
     print(f"[Handler] Received request data: {data}")
 
-    # render in a worker thread and get bytes + duration
     jpeg_bytes, render_ms = await asyncio.to_thread(
         render_image, azimuth, elevation, x, y, z, fx, fy, cx, cy, width, height, profile
     )
     
-        # Save the image to disk (non-blocking for the event loop)
-    # Example filename with size and profile; keep or simplify as you like.
     _saved_path = await asyncio.to_thread(
         save_render_bytes,
         jpeg_bytes,
@@ -216,17 +202,10 @@ async def render_handler(request: Request):
 
 
 def get_current_kbps(dev: str = "wlp82s0") -> float | None:
-    """
-    Reads the current HTB class rate (in kbit/s) for the given network interface.
-
-    Returns:
-        float: current rate in kbit/s if found, otherwise None
-    """
     try:
         out = subprocess.run(["tc", "class", "show", "dev", dev],
                              capture_output=True, text=True, check=False)
         text = out.stdout.strip() or out.stderr.strip()
-        # Example line: "class htb 1:1 root rate 1200Kbit ceil 1200Kbit burst 15Kb ..."
         match = re.search(r"rate\s+([\d.]+)\s*Kbit", text, re.IGNORECASE)
         if match:
             return float(match.group(1))

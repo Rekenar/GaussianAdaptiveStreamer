@@ -1,67 +1,56 @@
 // /static/abr_l2a.js
 class L2A_ABR {
-  /**
-   * L2A-LL-ish
-   *
-   * Profiles: 0 = best quality (largest), 3 = lowest quality (smallest)
-   */
   constructor(_resolutionSelect) {
-    // ----- Ladder / resolution ------------------------------------------------
     this.minProfile = 0;
     this.maxProfile = 3;
     this.profile = 3;
-    this.scaleLadder = [1.0, 0.75, 0.5, 0.35]; // not strictly needed, kept for consistency
+    this.scaleLadder = [1.0, 0.75, 0.5, 0.35];
 
-    // Resolution (if you change size in UI, call setResolution)
     this.width = 800;
     this.height = 600;
 
-    // ----- Bandit (EXP3) state ----------------------------------------------
     this.K = this.maxProfile - this.minProfile + 1;
-    this.logW = Array(this.K).fill(0.0); // log-weights
-    this.gamma = 0.10; // exploration mass
-    this.eta = 0.10;   // learning rate
+    this.logW = Array(this.K).fill(0.0);
+    this.gamma = 0.10;
+    this.eta = 0.10; 
 
-    // ----- Rolling stats -----------------------------------------------------
     this.windowSize = 30;
-    this.latTotal = [];   // ms
-    this.latServer = [];  // ms
-    this.latNet = [];     // ms
-    this.thrBytesPerMsNet = []; // bytes/ms (network only)
+    this.latTotal = [];  
+    this.latServer = []; 
+    this.latNet = [];     
+    this.thrBytesPerMsNet = [];
 
-    // ----- QoE / budgets -----------------------------------------------------
-    this.latencyTargetMs = 120; // END-TO-END target
-    this.minNetBudgetMs = 20;   // don’t let dynamic net budget collapse to 0
+    this.latencyTargetMs = 120; 
+    this.minNetBudgetMs = 20;  
 
-    // Loss shaping (NETWORK-ONLY)
     this.aOvershoot = 2.0;
     this.bLatency = 0.5;
     this.sSwitch = 0.35;
     this.qQuality = 0.55;
 
-    // ----- Stability guards --------------------------------------------------
-    this.cooldownMs = 250;
+    this.cooldownMs = 500;
     this.lastChangeAt = 0;
 
-    // ----- Exploration decay -------------------------------------------------
     this.clicks = 0;
     this.gammaMin = 0.02;
-    this.gammaDecay = 0.98; // every 12 clicks
+    this.gammaDecay = 0.98; 
 
-    // ----- Bytes model -------------------------------------------------------
-    // bytes ≈ K * pixels / 2^profile ; K learned from last sample
-    this.lastBytes = 12000;     // bootstrap
+
+    this.lastBytes = 12000;  
     this.lastProfile = this.profile;
     this.lastPixels = this.width * this.height;
 
-    // ----- Misc --------------------------------------------------------------
     this._t0 = null;
     this.prevProfile = undefined;
     this.debug = true;
 
-    // Cached from last pick for unbiased loss if you keep it
     this._lastProbs = Array(this.K).fill(1 / this.K);
     this._lastPChosen = 1.0;
+
+
+
+    this.lastThroughputBps = 0;
+
   }
 
   setResolution(w, h) {
@@ -70,33 +59,24 @@ class L2A_ABR {
     }
   }
 
-  // ==========================================================================
-  // Public API
-  // ==========================================================================
   pickProfile() {
     const now = performance.now();
     const canChange = (now - this.lastChangeAt) >= this.cooldownMs;
 
-    // Dynamic network budget
     const medServer = this._median(this.latServer) || this._serverDefault();
     const netBudget = Math.max(this.minNetBudgetMs, this.latencyTargetMs - medServer);
 
-    // Throughput distribution (log-domain)
     const { mu, sigma } = this._fitLogThr();
-    // Bytes model coefficient (profile 0 baseline)
     const K = this._bytesPerPixelCoef();
     const pixels = this.width * this.height;
 
-    // EXP3 base probabilities
     let probs = this._probsFromLogWeights();
     this._lastProbs = probs.slice();
 
-    // ---- Safety mask (risk-aware feasibility) -------------------------------
-    // For each candidate profile p, forecast bytes & net time at a conservative quantile;
-    // estimate risk ≈ P(total > target) using log-normal tail on throughput.
+   
     const safety = [];
-    const riskCap = 0.60;      // reject arms with high tail risk
-    const headroom = 1.07;     // allow a tiny slack vs target (2%)
+    const riskCap = 0.60;     
+    const headroom = 1.07;    
     for (let p = this.minProfile; p <= this.maxProfile; p++) {
       const bytes = this._bytesFor(p, K, pixels);
       const { expectTotal, risk } = this._riskAndExpect(bytes, mu, sigma, medServer, netBudget);
@@ -104,9 +84,7 @@ class L2A_ABR {
       safety.push(ok ? 1 : 0);
     }
 
-    // If all arms masked (can happen at very low bandwidth), keep only the safest
     if (safety.every(x => x === 0)) {
-      // let the least-risk arm survive
       let bestP = this.profile, bestR = +Infinity;
       for (let p = this.minProfile; p <= this.maxProfile; p++) {
         const r = this._riskForP(p, K, pixels, mu, sigma, medServer, netBudget);
@@ -118,13 +96,11 @@ class L2A_ABR {
       probs = this._renorm(probs.map((p, i) => p * safety[i]));
     }
 
-    // If we cannot change yet, deterministically keep current
     if (!canChange) {
       this._lastPChosen = 1.0;
       return this.profile;
     }
 
-    // Sample from masked probs
     const candidate = this._pickByProbs(probs);
     this._lastPChosen = Math.max(1e-6, probs[this.profileIndex(candidate)]);
 
@@ -134,16 +110,14 @@ class L2A_ABR {
       this.lastChangeAt = now;
     }
 
-    // downgrade guard
     if (candidate > this.profile && this.latNet.length >= 2) {
       const L = this.latNet;
       const medServer = this._median(this.latServer) || this._serverDefault();
       const netBudget = Math.max(this.minNetBudgetMs, this.latencyTargetMs - medServer);
       const bad2 = L[L.length - 1] > 0.9 * netBudget && L[L.length - 2] > 0.9 * netBudget;
-      if (!bad2) { // veto downgrade once
-        // re-sample among non-downgrade arms (keep current or upgrade)
+      if (!bad2) { 
+
         const probs = this._lastProbs.slice();
-        // zero out strictly lower-quality arms
         for (let p = this.profile + 1; p <= this.maxProfile; p++) probs[this.profileIndex(p)] = 0;
         const ren = this._renorm(probs);
         const c2 = this._pickByProbs(ren);
@@ -152,7 +126,6 @@ class L2A_ABR {
     }
 
 
-    // Gentle exploration decay as we learn
     this.clicks++;
     if (this.clicks % 12 === 0) {
       this.gamma = Math.max(this.gammaMin, this.gamma * this.gammaDecay);
@@ -171,7 +144,6 @@ class L2A_ABR {
     const hasServer = Number.isFinite(renderMs) && renderMs >= 0;
     const netMs = hasServer ? Math.max(1, dtTotal - renderMs) : dtTotal;
 
-    // Rolling stats
     this._push(this.latTotal, dtTotal);
     if (hasServer) this._push(this.latServer, renderMs);
     this._push(this.latNet, netMs);
@@ -183,21 +155,22 @@ class L2A_ABR {
       this._push(this.thrBytesPerMsNet, contentLengthBytes / netMs);
     }
 
-    // Dynamic network budget for loss
+    if (contentLengthBytes > 0 && netMs > 0) {
+      this.lastThroughputBps = (contentLengthBytes / 1000) / (netMs / 1000);
+      console.log(`[ABR] throughput = ${this.lastThroughputBps.toFixed(1)} Kb/s`);
+    }
+
     const medServer = this._median(this.latServer) || this._serverDefault();
     const netBudget = Math.max(this.minNetBudgetMs, this.latencyTargetMs - medServer);
 
-    // Bandit loss from *network-only* time normalized by netBudget
     const usedProfile = this.profile;
     const lossChosen = this._lossFromNetObservation(netMs, usedProfile, netBudget);
 
-    // EXP3 update (unbiased)
     const pChosen = Math.max(1e-6, this._lastPChosen);
     const unbiasedLoss = lossChosen / pChosen;
     const idx = this.profileIndex(usedProfile);
     this.logW[idx] += (-this.eta * unbiasedLoss);
 
-    // recentre to keep numbers sane
     const maxLogW = Math.max(...this.logW);
     for (let i = 0; i < this.K; i++) this.logW[i] -= maxLogW;
 
@@ -213,9 +186,6 @@ class L2A_ABR {
     }
   }
 
-  // ==========================================================================
-  // Loss model (NETWORK-ONLY) relative to *dynamic* netBudget; [0,1]
-  // ==========================================================================
   _lossFromNetObservation(netMs, usedProfile, netBudgetMs) {
     const t = Math.max(1, netBudgetMs);
     const over = Math.max(0, netMs - t) / t;
@@ -234,30 +204,24 @@ class L2A_ABR {
     return L;
   }
 
-  // ==========================================================================
-  // Safety / forecasting helpers
-  // ==========================================================================
   _bytesFor(p, K, pixels) {
-    // bytes ≈ K * pixels / 2^profile
     return Math.max(1024, Math.round(K * pixels / Math.pow(2, p)));
   }
 
   _bytesPerPixelCoef() {
-    // K ≈ bytes * 2^profile / pixels  (learn from last sample)
     const px = this.lastPixels || (this.width * this.height);
     if (px > 0) return Math.max(0.05, (this.lastBytes * Math.pow(2, this.lastProfile)) / px);
     return 0.2;
   }
 
   _serverDefault() {
-    // 40–60 ms typical; scale mildly with area vs 800x600
     const base = 40, refPx = 800 * 600, px = this.width * this.height;
     return base + 20 * Math.min(2.0, px / refPx);
   }
 
   _fitLogThr() {
     const arr = this.thrBytesPerMsNet;
-    if (!arr.length) return { mu: Math.log(100), sigma: 0.7 }; // ~100 B/ms prior
+    if (!arr.length) return { mu: Math.log(100), sigma: 0.7 }; 
     const z = arr.map(x => Math.log(Math.max(x, 1e-6)));
     const n = z.length;
     const mu = z.reduce((a, b) => a + b, 0) / n;
@@ -266,13 +230,11 @@ class L2A_ABR {
   }
 
   _riskAndExpect(bytes, mu, sigma, medServer, netBudget) {
-    // Expectation via conservative quantile (≈20th percentile)
     const c = 0.84;
-    const thr_q = Math.exp(mu - c * sigma); // bytes/ms
+    const thr_q = Math.exp(mu - c * sigma); 
     const expectedNetMs = bytes / Math.max(thr_q, 1e-6);
     const expectTotal = expectedNetMs + medServer;
 
-    // Risk: P(total > target) ≈ P(thr < bytes / (target - medServer))
     let risk = 1.0;
     const needNet = Math.max(1, this.latencyTargetMs - medServer);
     if (sigma > 1e-6) {
@@ -291,22 +253,16 @@ class L2A_ABR {
   }
 
   _qualityReward(p) {
-    // Approximate perceptual quality ~ 1 / (1 + 0.6 * p)
     return 1 / (1 + 0.6 * p);
   }
 
 
-
-  // ==========================================================================
-  // EXP3 plumbing and utils
-  // ==========================================================================
   _probsFromLogWeights() {
     const maxL = Math.max(...this.logW);
     const w = this.logW.map(L => Math.exp(L - maxL));
     const sumW = w.reduce((a, b) => a + b, 0) || 1;
     const base = w.map(x => x / sumW);
 
-    // ε-mix with gamma
     const eps = this.gamma / this.K;
     const mixed = base.map(p => (1 - this.gamma) * p + eps);
     return this._renorm(mixed);
@@ -337,7 +293,6 @@ class L2A_ABR {
   _clamp(x, lo, hi) { return Math.min(Math.max(x, lo), hi); }
 
   _stdNormCdf(t) {
-    // Abramowitz–Stegun
     const b1 = 0.31938153, b2 = -0.356563782, b3 = 1.781477937, b4 = -1.821255978, b5 = 1.330274429, p = 0.2316419, c = 0.39894228;
     if (t >= 0) { const k = 1 / (1 + p * t); return 1 - c * Math.exp(-t * t / 2) * k * (b1 + k * (b2 + k * (b3 + k * (b4 + k * b5)))); }
     return 1 - this._stdNormCdf(-t);

@@ -1,4 +1,3 @@
-/* ============== CSS Reset + Tokens ============== */
 :root {
   --bg: #0b1220;
   --bg-soft: #0f172a;
@@ -41,7 +40,6 @@ body {
   color: var(--text);
 }
 
-/* ============== Layout ============== */
 .sidebar {
   position: fixed;
   inset: 0 auto 0 0;
@@ -80,7 +78,6 @@ body {
 
 .options { margin-top: 16px; }
 
-/* ============== Typography ============== */
 h3 {
   margin: 18px 0 12px;
   font-size: 16px;
@@ -89,7 +86,6 @@ h3 {
 }
 h3.section { margin-top: 20px; }
 
-/* ============== Form Controls ============== */
 label { font-size: 13px; color: var(--muted); display: block; margin: 10px 0 6px; }
 label.row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
@@ -114,7 +110,6 @@ select:focus { border-color: var(--brand); box-shadow: var(--ring); }
   align-items: center;
 }
 
-/* File input */
 .file-input {
   position: relative;
   display: inline-flex;
@@ -132,7 +127,6 @@ select:focus { border-color: var(--brand); box-shadow: var(--ring); }
 }
 .file-input span { font-size: 13px; color: var(--muted); }
 
-/* Buttons */
 .btn, .apply-button {
   display: inline-flex;
   align-items: center;
@@ -156,7 +150,6 @@ select:focus { border-color: var(--brand); box-shadow: var(--ring); }
 
 .btn-row { display: flex; gap: 10px; flex-wrap: wrap; }
 
-/* Cards */
 .card {
   background: linear-gradient(180deg, var(--panel-2), var(--panel));
   border: 1px solid rgba(148,163,184,.18);
@@ -165,7 +158,6 @@ select:focus { border-color: var(--brand); box-shadow: var(--ring); }
   box-shadow: var(--shadow-2);
 }
 
-/* ============== Topbar ============== */
 .topbar {
   position: sticky;
   top: 0;
@@ -201,7 +193,6 @@ select:focus { border-color: var(--brand); box-shadow: var(--ring); }
   border-color: rgba(148,163,184,.28);
 }
 
-/* ============== Main / Stage ============== */
 .main-content {
   min-height: 100vh;
   margin-left: 300px;
@@ -256,10 +247,8 @@ select:focus { border-color: var(--brand); box-shadow: var(--ring); }
 }
 .hud-row { opacity: .95; }
 
-/* Instructions (legacy overlay support) */
-.instructions { display: none; } /* replaced by .hud */
+.instructions { display: none; }
 
-/* ============== Progress ============== */
 .progress {
   height: 12px;
   background: rgba(148,163,184,.18);
@@ -275,10 +264,8 @@ select:focus { border-color: var(--brand); box-shadow: var(--ring); }
   transition: width .2s linear;
 }
 
-/* ============== Muted text ============== */
 .muted { color: var(--muted); }
 
-/* ============== Responsive ============== */
 @media (max-width: 960px) {
   .main-content { margin-left: 56px; }
   .sidebar:not(.collapsed) { width: 56px; padding: 16px 12px; }
@@ -287,12 +274,10 @@ select:focus { border-color: var(--brand); box-shadow: var(--ring); }
   #object-viewer { width: min(96vw, 1200px); }
 }
 
-/* ============== Motion preferences ============== */
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
 
-/* --- Selects: stronger contrast + better legibility --- */
 select {
   color: var(--text);
   background: linear-gradient(180deg, var(--panel-2), var(--panel));
@@ -301,22 +286,20 @@ select {
 select option { color: var(--text); background: var(--panel); }
 select:disabled { opacity: .7; }
 
-/* --- Native file input with a styled button and visible filename --- */
 .file-native {
   width: 100%;
-  padding: 0;                      /* let the UA lay it out */
+  padding: 0;                      
   background: transparent;
   color: var(--text);
   font-size: 14px;
   border: 1px solid rgba(148,163,184,.25);
   border-radius: 10px;
   overflow: hidden;
-  padding: 8px 10px;               /* small padding around the control */
+  padding: 8px 10px;             
   background: linear-gradient(180deg, var(--panel-2), var(--panel));
 }
 .file-native:focus { box-shadow: var(--ring); border-color: var(--brand); }
 
-/* Style the “Choose file” button part */
 .file-native::file-selector-button {
   margin-right: 10px;
   border: none;
@@ -331,10 +314,8 @@ select:disabled { opacity: .7; }
 .file-native:hover::file-selector-button { filter: brightness(1.05); }
 
 
-/* Recording indicator using :has() so we can look down into .btn-row */
 .card:has(#stop-rec:not(:disabled)) #rec-status { color: var(--danger); }
 
-/* Hide original text while recording and show blinking badge */
 .card:has(#stop-rec:not(:disabled)) #rec-status { font-size: 0; }
 .card:has(#stop-rec:not(:disabled)) #rec-status::after {
   content: "● Recording…";
@@ -351,31 +332,25 @@ select:disabled { opacity: .7; }
   50%      { opacity: .35; }
 }
 
-/* --- Make the rendered image “tab” smaller and responsive --- */
-/* Cap the stage width a bit tighter */
 #object-viewer {
-  width: min(82vw, 1100px);   /* was up to ~92vw; reduce */
+  width: min(82vw, 1100px); 
   aspect-ratio: 4 / 3;
 }
 
-/* Regardless of the inline width set by JS, clamp the canvas size */
 #object-viewer canvas, #object-viewer img {
   max-width: 100% !important;
   height: auto !important;
   image-rendering: auto;
 }
 
-/* For very wide screens, keep it modest */
 @media (min-width: 1400px) {
   #object-viewer { width: 1000px; }
 }
 
-/* Slightly tighten overall layout on smaller screens */
 @media (max-width: 960px) {
   #object-viewer { width: min(94vw, 900px); }
 }
 
-/* --- Minor readability boosts for all form controls --- */
 input[type="number"] {
   color: var(--text);
   font-weight: 600;
@@ -383,11 +358,10 @@ input[type="number"] {
 input::placeholder { color: var(--muted); opacity: .8; }
 
 
-/* Hide scrollbars in sidebar but keep scrolling */
 .sidebar {
   overflow-y: auto;
-  scrollbar-width: none;   /* Firefox */
+  scrollbar-width: none; 
 }
 .sidebar::-webkit-scrollbar {
-  display: none;           /* Chrome, Safari, Edge */
+  display: none;      
 }
