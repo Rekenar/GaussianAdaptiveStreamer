@@ -127,9 +127,14 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
     else:
         print(f"[Render] No downsampling applied (profile={profile})")
 
-    buf = io.BytesIO()
-    pil_img.save(buf, format="JPEG", quality=70)
-    buf.seek(0)
+
+    buf_jpg = io.BytesIO()
+    pil_img.save(buf_jpg, format="JPEG", quality=70)
+    buf_jpg.seek(0)
+
+    buf_png = io.BytesIO()          # <-- lossless PNG version
+    pil_img.save(buf_png, format="PNG")
+    buf_png.seek(0)
 
     if device.type == "cuda":
         torch.cuda.synchronize()
@@ -138,8 +143,8 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
 
     print(f"[Render] Duration: {render_ms:.2f} ms")
     print(f"GPU memory after: {torch.cuda.memory_allocated() / 1024**3:.2f} GB") 
+    return buf_jpg.getvalue(), buf_png.getvalue(), render_ms
 
-    return buf.getvalue(), render_ms
 
 def save_render_bytes(jpeg_bytes: bytes, out_dir: str = "captures", base_name: str | None = None) -> str:
     out_dir_abs = out_dir if os.path.isabs(out_dir) else os.path.join(ROOT, out_dir)
@@ -156,6 +161,15 @@ def save_render_bytes(jpeg_bytes: bytes, out_dir: str = "captures", base_name: s
         f.write(jpeg_bytes)
 
     return out_path
+
+def save_render_png(png_bytes, out_dir="captures", base_name=None):
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, base_name or f"frame-{int(time.time()*1000)}.png")
+
+    with open(path, "wb") as f:
+        f.write(png_bytes)
+
+    return path
 
 
 
@@ -180,24 +194,22 @@ async def render_handler(request: Request):
 
     print(f"[Handler] Received request data: {data}")
 
-    jpeg_bytes, render_ms = await asyncio.to_thread(
+    jpeg_bytes, png_bytes, render_ms = await asyncio.to_thread(
         render_image, azimuth, elevation, x, y, z, fx, fy, cx, cy, width, height, profile
-    )
-    
-    _saved_path = await asyncio.to_thread(
-        save_render_bytes,
-        jpeg_bytes,
+    )   
+        
+    # Temporary PNG capture
+    await asyncio.to_thread(
+        save_render_png,
+        png_bytes,
         out_dir=os.path.join("static", "captures"),
-        base_name=f"{int(time.time()*1000)}_{int(width)}x{int(height)}_p{profile}.jpg"
+        base_name=f"{int(time.time()*1000)}_{int(width)}x{int(height)}_p{profile}.png"
     )
 
     return Response(
         jpeg_bytes,
         media_type="image/jpeg",
-        headers={
-            "Cache-Control": "no-store",
-            "X-Render-Time-Ms": f"{render_ms:.2f}"
-        },
+        headers={"Cache-Control": "no-store", "X-Render-Time-Ms": f"{render_ms:.2f}"},
     )
 
 
