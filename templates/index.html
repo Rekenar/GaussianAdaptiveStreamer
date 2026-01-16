@@ -93,6 +93,14 @@
 
             <button class="apply-button" onclick="applyConfig()">Apply</button>
         </div>
+        <div>
+            <label for="fileName">Filename for experiment data</label>
+            <input id="fileName" type="text" />
+        </div>
+        <div>
+            <label for="networkName">Network to check</label>
+            <input id="networkName" type="text" />
+        </div>
     </aside>
 
     <!-- Main -->
@@ -202,6 +210,7 @@
         let height = 600;
         let rotStep = 1;
         let posStep = 0.1;
+        let fileName = "";
 
         let abrEnabledActive = abrToggle.checked;
 
@@ -273,6 +282,10 @@
             cy = parseFloat(document.getElementById('cy').value);
             rotStep = parseFloat(document.getElementById('rot-step').value);
             posStep = parseFloat(document.getElementById('pos-step').value);
+            fileName = document.getElementById('fileName')?.value;
+            networkName = document.getElementById('networkName')?.value;
+
+
 
             // Commit ABR state from the checkbox
             abrEnabledActive = abrToggle.checked;
@@ -412,14 +425,15 @@
         const fileInput = document.getElementById('rec-file');
         const startBtn = document.getElementById('start-playback');
 
-        async function reportPred(id, pred_bps, profile) {
+        async function reportPred(networkName, fileName, pred_bps, profile) {
             try {
                 await fetch("/metrics/predict", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     cache: "no-store",
                     body: JSON.stringify({
-                        expId: id,
+                        networkName,
+                        fileName,
                         pred_bps,
                         profile
                     })
@@ -441,7 +455,6 @@
                 let events = JSON.parse(text);
                 events = Array.isArray(events) ? events : (events.events || []);
                 if (!events.length) throw new Error('No events in file');
-                let id = 0;
                 for (const ev of events) {
                     if (ev.angle != null) angle = Number(ev.angle);
                     if (ev.elevation != null) elevation = Number(ev.elevation);
@@ -457,7 +470,7 @@
 
                     console.log(predictedBps, profileIdx)
 
-                    await reportPred(id, predictedBps, profileIdx);
+                    await reportPred(networkName, fileName, predictedBps, profileIdx);
                 }
 
             } catch (err) {

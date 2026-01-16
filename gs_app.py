@@ -132,10 +132,6 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
     pil_img.save(buf_jpg, format="JPEG", quality=70)
     buf_jpg.seek(0)
 
-    buf_png = io.BytesIO()          # <-- lossless PNG version
-    pil_img.save(buf_png, format="PNG")
-    buf_png.seek(0)
-
     if device.type == "cuda":
         torch.cuda.synchronize()
     t1 = time.perf_counter()
@@ -143,7 +139,7 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
 
     print(f"[Render] Duration: {render_ms:.2f} ms")
     print(f"GPU memory after: {torch.cuda.memory_allocated() / 1024**3:.2f} GB") 
-    return buf_jpg.getvalue(), buf_png.getvalue(), render_ms
+    return buf_jpg.getvalue(), render_ms
 
 
 def save_render_bytes(jpeg_bytes: bytes, out_dir: str = "captures", base_name: str | None = None) -> str:
@@ -161,17 +157,6 @@ def save_render_bytes(jpeg_bytes: bytes, out_dir: str = "captures", base_name: s
         f.write(jpeg_bytes)
 
     return out_path
-
-def save_render_png(png_bytes, out_dir="captures", base_name=None):
-    os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, base_name or f"frame-{int(time.time()*1000)}.png")
-
-    with open(path, "wb") as f:
-        f.write(png_bytes)
-
-    return path
-
-
 
 # ------------------- HTTP handlers -------------------
 async def home(request:Request):
@@ -194,17 +179,9 @@ async def render_handler(request: Request):
 
     print(f"[Handler] Received request data: {data}")
 
-    jpeg_bytes, png_bytes, render_ms = await asyncio.to_thread(
+    jpeg_bytes, render_ms = await asyncio.to_thread(
         render_image, azimuth, elevation, x, y, z, fx, fy, cx, cy, width, height, profile
     )   
-        
-    # Temporary PNG capture
-    await asyncio.to_thread(
-        save_render_png,
-        png_bytes,
-        out_dir=os.path.join("static", "captures"),
-        base_name=f"{int(time.time()*1000)}_{int(width)}x{int(height)}_p{profile}.png"
-    )
 
     return Response(
         jpeg_bytes,
@@ -226,33 +203,32 @@ def get_current_kbps(dev: str = "wlp82s0") -> float | None:
     return None
 
 
-BASE_DIR = "experiments"
+def now_ms(): 
+    return int(time.time() * 1000)
 
-def now_ms(): return int(time.time() * 1000)
+EXPERIMENT_DIR = os.path.join(ROOT, "experiment")
 
-def ensure_exp_dir(exp_id: str):
-    path = os.path.join(BASE_DIR, exp_id)
-    os.makedirs(path, exist_ok=True)
-    return path
 
 # POST /metrics/predict
 # body: { "expId": "exp-001", "pred_bps": 8500000, "profile": 2 }
 async def metrics_predict(request):
     try:
         body = await request.json()
-        exp_id    = str(body["expId"])
         pred_bps  = float(body["pred_bps"])
         profile   = body.get("profile")
-        tc_status = get_current_kbps("wlp82s0")
+        file_name = body.get("fileName"), default="default"
+        network = body.get("networkName")
+        tc_status = get_current_kbps(network)
     except Exception as e:
         return PlainTextResponse(f"Invalid JSON: {e}", status_code=400)
 
-    d = ensure_exp_dir(exp_id)
-    out_path = os.path.join(d, "pred.ndjson")
+
+
+    out_path = os.path.join(EXPERIMENT_DIR, file_name)
+    os.makedirs(out_path, exist_ok=True)
 
     rec = {
         "t_server": now_ms(),
-        "expId": exp_id,
         "pred_bps": pred_bps,
         "profile": profile,
         "tc_status" : tc_status
@@ -260,8 +236,8 @@ async def metrics_predict(request):
     with open(out_path, "a", buffering=1) as f:
         f.write(json.dumps(rec) + "\n")
 
-    print(f"[predict] {rec}", flush=True)
-    return JSONResponse({"ok": True})
+    print(f"[predict] file={file_name} {rec}", flush=True)
+    return JSONResponse({"ok": True, "file": file_name})
 
 
 starlette = Starlette(
