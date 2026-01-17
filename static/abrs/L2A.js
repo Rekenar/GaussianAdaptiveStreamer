@@ -20,7 +20,7 @@ class L2A_ABR {
     this.latNet = [];     
     this.thrBytesPerMsNet = [];
 
-    this.latencyTargetMs = 100; 
+    this.latencyTargetMs = 140; 
     this.minNetBudgetMs = 20;  
 
     this.aOvershoot = 1.5;
@@ -75,8 +75,8 @@ class L2A_ABR {
 
    
     const safety = [];
-    const riskCap = 0.45;     
-    const headroom = 1.03;    
+    const riskCap = 0.65;     
+    const headroom = 1.10;    
     for (let p = this.minProfile; p <= this.maxProfile; p++) {
       const bytes = this._bytesFor(p, K, pixels);
       const { expectTotal, risk } = this._riskAndExpect(bytes, mu, sigma, medServer, netBudget);
@@ -230,7 +230,7 @@ class L2A_ABR {
   }
 
   _riskAndExpect(bytes, mu, sigma, medServer, netBudget) {
-    const c = 0.85;
+    const c = 0.75;
     const thr_q = Math.exp(mu - c * sigma); 
     const expectedNetMs = bytes / Math.max(thr_q, 1e-6);
     const expectTotal = expectedNetMs + medServer;
