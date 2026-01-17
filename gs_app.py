@@ -20,21 +20,12 @@ from scipy.spatial.transform import Rotation as R
 from gsplat import rasterization
 from PIL import Image
 
-import logging
-from logging.handlers import RotatingFileHandler
-
 from starlette.applications import Starlette
 from starlette.responses import Response, JSONResponse, PlainTextResponse
 from starlette.routing import Route, Mount
 from starlette.staticfiles import StaticFiles
 from starlette.requests import Request
 from starlette.responses import FileResponse
-
-
-LOG_PATH = os.path.join(os.path.dirname(__file__), "server.log")
-
-logger = logging.getLogger("3dgs")
-logger.setLevel(logging.INFO)
 
 
 ROOT = os.path.dirname(__file__)
@@ -84,7 +75,7 @@ del means_np, quats_np, scales_np, opacities_np, shs_np
 
 def render_image(azimuth_deg, elevation_deg, x, y, z,
                  fx, fy, cx, cy, width, height, profile) -> tuple[bytes, float]:
-    logger.info("GPU memory before: %.2f GB", torch.cuda.memory_allocated() / 1024**3)
+    print(f"GPU memory before: {torch.cuda.memory_allocated() / 1024**3:.2f} GB") 
 
     # Clamp profile and compute downscale factor (1, 2, 4, 8)
     p = max(0, min(3, int(profile)))
@@ -93,10 +84,9 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
     w = int(width)
     h = int(height)
 
-    logger.info(
-        "[Render] params azimuth=%s elevation=%s x=%s y=%s z=%s fx=%s fy=%s cx=%s cy=%s w=%s h=%s profile=%s factor=%s",
-        azimuth_deg, elevation_deg, x, y, z, fx, fy, cx, cy, w, h, profile, factor
-    )
+    print(f"[Render] Requested params -> azimuth={azimuth_deg}, elevation={elevation_deg}, "
+          f"x={x}, y={y}, z={z}, fx={fx}, fy={fy}, cx={cx}, cy={cy}, "
+          f"width={w}, height={h}, profile={profile} (factor={factor})")
 
     viewmat = create_viewmat(azimuth_deg, elevation_deg, x, y, z).to(device).unsqueeze(0)
     K = torch.tensor([[fx, 0, cx],
@@ -133,9 +123,9 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
         out_w = max(1, w // factor)
         out_h = max(1, h // factor)
         pil_img = pil_img.resize((out_w, out_h), resample=Image.LANCZOS)
-        logger.info(f"[Render] Image size after downsampling: {pil_img.size}")
+        print(f"[Render] Image size after downsampling: {pil_img.size}")
     else:
-        logger.info(f"[Render] No downsampling applied (profile={profile})")
+        print(f"[Render] No downsampling applied (profile={profile})")
 
 
     buf_jpg = io.BytesIO()
@@ -147,8 +137,8 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
     t1 = time.perf_counter()
     render_ms = (t1 - t0) * 1000.0
 
-    logger.info(f"[Render] Duration: {render_ms:.2f} ms")
-    logger.info(f"GPU memory after: {torch.cuda.memory_allocated() / 1024**3:.2f} GB") 
+    print(f"[Render] Duration: {render_ms:.2f} ms")
+    print(f"GPU memory after: {torch.cuda.memory_allocated() / 1024**3:.2f} GB") 
     return buf_jpg.getvalue(), render_ms
 
 
@@ -187,7 +177,7 @@ async def render_handler(request: Request):
     height = float(data.get("height", 600))
     profile = int(data.get("profile", 0))  # 0..3 -> 1x,2x,4x,8x downsample
 
-    logger.info("Receiving data")
+    print(f"[Handler] Received request data: {data}")
 
     jpeg_bytes, render_ms = await asyncio.to_thread(
         render_image, azimuth, elevation, x, y, z, fx, fy, cx, cy, width, height, profile
@@ -222,7 +212,6 @@ EXPERIMENT_DIR = os.path.join(ROOT, "experiment")
 # POST /metrics/predict
 # body: { "expId": "exp-001", "pred_bps": 8500000, "profile": 2 }
 async def metrics_predict(request):
-
     try:
         body = await request.json()
         pred_bps  = float(body["pred_bps"])
