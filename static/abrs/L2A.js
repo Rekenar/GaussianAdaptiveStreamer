@@ -11,8 +11,8 @@ class L2A_ABR {
 
     this.K = this.maxProfile - this.minProfile + 1;
     this.logW = Array(this.K).fill(0.0);
-    this.gamma = 0.10;
-    this.eta = 0.10; 
+    this.gamma = 0.05;
+    this.eta = 0.05; 
 
     this.windowSize = 30;
     this.latTotal = [];  
@@ -20,20 +20,20 @@ class L2A_ABR {
     this.latNet = [];     
     this.thrBytesPerMsNet = [];
 
-    this.latencyTargetMs = 120; 
+    this.latencyTargetMs = 100; 
     this.minNetBudgetMs = 20;  
 
-    this.aOvershoot = 2.0;
-    this.bLatency = 0.5;
-    this.sSwitch = 0.35;
-    this.qQuality = 0.55;
+    this.aOvershoot = 1.5;
+    this.bLatency = 0.65;
+    this.sSwitch = 0.5;
+    this.qQuality = 0.4;
 
-    this.cooldownMs = 500;
+    this.cooldownMs = 800;
     this.lastChangeAt = 0;
 
     this.clicks = 0;
     this.gammaMin = 0.02;
-    this.gammaDecay = 0.98; 
+    this.gammaDecay = 0.99; 
 
 
     this.lastBytes = 12000;  
@@ -75,8 +75,8 @@ class L2A_ABR {
 
    
     const safety = [];
-    const riskCap = 0.60;     
-    const headroom = 1.07;    
+    const riskCap = 0.45;     
+    const headroom = 1.03;    
     for (let p = this.minProfile; p <= this.maxProfile; p++) {
       const bytes = this._bytesFor(p, K, pixels);
       const { expectTotal, risk } = this._riskAndExpect(bytes, mu, sigma, medServer, netBudget);
@@ -230,7 +230,7 @@ class L2A_ABR {
   }
 
   _riskAndExpect(bytes, mu, sigma, medServer, netBudget) {
-    const c = 0.84;
+    const c = 0.85;
     const thr_q = Math.exp(mu - c * sigma); 
     const expectedNetMs = bytes / Math.max(thr_q, 1e-6);
     const expectTotal = expectedNetMs + medServer;
