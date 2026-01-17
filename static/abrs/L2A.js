@@ -25,8 +25,8 @@ class L2A_ABR {
 
     this.aOvershoot = 1.5;
     this.bLatency = 0.65;
-    this.sSwitch = 0.45;
-    this.qQuality = 0.50;
+    this.sSwitch = 0.35;
+    this.qQuality = 0.55;
 
     this.cooldownMs = 800;
     this.lastChangeAt = 0;
@@ -75,8 +75,8 @@ class L2A_ABR {
 
    
     const safety = [];
-    const riskCap = 0.70;     
-    const headroom = 1.12;    
+    const riskCap = 0.75;     
+    const headroom = 1.15;    
     for (let p = this.minProfile; p <= this.maxProfile; p++) {
       const bytes = this._bytesFor(p, K, pixels);
       const { expectTotal, risk } = this._riskAndExpect(bytes, mu, sigma, medServer, netBudget);
