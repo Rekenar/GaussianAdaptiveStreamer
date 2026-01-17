@@ -177,21 +177,32 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
     chk("viewmat", viewmat)
     chk("viewmat", viewmat)
 
-    colors_rendered, alphas, _ = rasterization(
-        means=means,
-        quats=quats,
-        scales=scales,
-        opacities=opacities,
-        colors=shs,
-        viewmats=viewmat,
-        Ks=K,
-        width=w,
-        height=h,
-        packed=False,
-        sh_degree=0,
-        backgrounds=None,
-        render_mode="RGB",
-    )
+
+    
+    logger.info("Calling rasterization now...")
+    try:
+        colors_rendered, alphas, _ = rasterization(
+            means=means,
+            quats=quats,
+            scales=scales,
+            opacities=opacities,
+            colors=shs,
+            viewmats=viewmat,
+            Ks=K,
+            width=w,
+            height=h,
+            packed=False,
+            sh_degree=0,
+            backgrounds=None,
+            render_mode="RGB",
+        )
+        logger.info("Returned from rasterization, syncing...")
+        torch.cuda.synchronize()
+        logger.info("After synchronize")
+    except Exception:
+        logger.exception("Rasterization failed")
+        raise
+
     
     logger.info("After rasterization")
 
