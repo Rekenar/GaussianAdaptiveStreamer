@@ -108,8 +108,12 @@
                 <input id="networkName" type="text" />
             </div>
             <div>
-                <label for="savePNG">Save Images(Test)</label>
+                <label for="savePNG">Save PNGs(Test)</label>
                 <input type="checkbox" id="savePNG" />
+            </div>
+            <div>
+                <label for="saveJPG">Save JPGs(Test)</label>
+                <input type="checkbox" id="saveJPG" />
             </div>
             <button class="apply-button" onclick="applyConfig()">Apply</button>
         </div>
@@ -226,6 +230,7 @@
         let fileName = "";
         let profileChoosen = 0;
         let savePNG = false;
+        let saveJPG = false;
 
         let abrEnabledActive = abrToggle.checked;
 
@@ -301,6 +306,7 @@
             networkName = document.getElementById('networkName')?.value;
             profileChoosen = document.getElementById('profile')?.value;
             savePNG = document.getElementById("savePNG")?.checked;
+            saveJPG = document.getElementById("saveJPG")?.checked;
 
 
             // Commit ABR state from the checkbox
@@ -341,7 +347,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile, fileName, savePNG
+                        angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile, fileName, savePNG, saveJPG
                     }),
                 })
                     .then(async (response) => {

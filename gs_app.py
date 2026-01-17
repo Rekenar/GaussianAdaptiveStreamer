@@ -132,7 +132,7 @@ shs = torch.from_numpy(shs_np).to(device)
 del means_np, quats_np, scales_np, opacities_np, shs_np
 
 def render_image(azimuth_deg, elevation_deg, x, y, z,
-                 fx, fy, cx, cy, width, height, profile, savePNG) -> tuple[bytes, float, bytes, bytes]:
+                 fx, fy, cx, cy, width, height, profile, savePNG, saveJPG) -> tuple[bytes, float, bytes, bytes]:
     print(f"GPU memory before: {torch.cuda.memory_allocated() / 1024**3:.2f} GB", flush=True) 
 
     logger.debug(
@@ -232,15 +232,15 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
         )
 
     buf_jpg_original = io.BytesIO()
-
     buf_png_original = io.BytesIO()
 
     if savePNG: 
-        pil_img_original.save(buf_jpg_original, format="JPEG")
-        buf_jpg_original.seek(0)
-
         pil_img_original.save(buf_png_original, format="PNG")
         buf_png_original.seek(0)
+        
+    if saveJPG:
+        pil_img_original.save(buf_jpg_original, format="JPEG")
+        buf_jpg_original.seek(0)
     
     buf_jpg = io.BytesIO()
     pil_img.save(buf_jpg, format="JPEG", quality=70, subsampling=0)
@@ -310,22 +310,25 @@ async def render_handler(request: Request):
     width = float(data.get("width", 800))
     height = float(data.get("height", 600))
     profile = int(data.get("profile", 0))  # 0..3 -> 1x,2x,4x,8x downsample
-    fileName = data.get("fileName", "default")
+    fileName = data.get("fileName") or "default"
     savePNG = bool(data.get("savePNG", False))
+    saveJPG = bool(data.get("saveJPG", False))
 
     loop = asyncio.get_running_loop()
     jpeg_bytes, render_ms, jpeg_original, png_original = await loop.run_in_executor(
         RENDER_EXECUTOR,
         render_image,
-        azimuth, elevation, x, y, z, fx, fy, cx, cy, width, height, profile, savePNG
+        azimuth, elevation, x, y, z, fx, fy, cx, cy, width, height, profile, savePNG, saveJPG
     )
     
 
     if savePNG:
-        logger.info("Saving JPGE")
-        save_render_bytes(jpeg_bytes=jpeg_original, out_dir=f"captures/{fileName}/jpg", type=".jpg")
         logger.info("Saving PNG")
         save_render_bytes(png_original, f"captures/{fileName}/png", type=".png")
+
+    if saveJPG:
+        logger.info("Saving JPGE")
+        save_render_bytes(jpeg_bytes=jpeg_original, out_dir=f"captures/{fileName}/jpg", type=".jpg")
 
     return Response(
         jpeg_bytes,
@@ -365,15 +368,15 @@ async def metrics_predict(request):
         body = await request.json()
         pred_bps  = float(body["pred_bps"])
         profile   = body.get("profile")
-        file_name = body.get("fileName")
+        file_name = body.get("fileName") or "default"
         network = body.get("networkName")
         tc_status = get_current_kbps(network)
     except Exception as e:
         return PlainTextResponse(f"Invalid JSON: {e}", status_code=400)
 
+    logger.info(f"Request with data: {body}")
 
-
-    out_path = os.path.join(EXPERIMENT_DIR, file_name)
+    out_path = os.path.join(EXPERIMENT_DIR, f"{file_name}")
     os.makedirs(out_path, exist_ok=True)
 
     rec = {
@@ -382,7 +385,7 @@ async def metrics_predict(request):
         "profile": profile,
         "tc_status" : tc_status
     }
-    with open(out_path, "a", buffering=1) as f:
+    with open(f"{out_path}/testdata.ndjson", "a", buffering=1) as f:
         f.write(json.dumps(rec) + "\n")
 
     print(f"[predict] file={file_name} {rec}", flush=True)
