@@ -66,10 +66,10 @@ file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
 
-logging.warning("CUDA_VISIBLE_DEVICES=%s", os.getenv("CUDA_VISIBLE_DEVICES"))
-logging.warning("CUDA_LAUNCH_BLOCKING=%s", os.getenv("CUDA_LAUNCH_BLOCKING"))
-logging.warning("TORCH_SHOW_CPP_STACKTRACES=%s", os.getenv("TORCH_SHOW_CPP_STACKTRACES"))
-logging.warning("torch=%s cuda=%s devices=%d device0=%s",
+logger.warning("CUDA_VISIBLE_DEVICES=%s", os.getenv("CUDA_VISIBLE_DEVICES"))
+logger.warning("CUDA_LAUNCH_BLOCKING=%s", os.getenv("CUDA_LAUNCH_BLOCKING"))
+logger.warning("TORCH_SHOW_CPP_STACKTRACES=%s", os.getenv("TORCH_SHOW_CPP_STACKTRACES"))
+logger.warning("torch=%s cuda=%s devices=%d device0=%s",
                 torch.__version__, torch.cuda.is_available(),
                 torch.cuda.device_count(),
                 torch.cuda.get_device_name(0) if torch.cuda.is_available() else "n/a")
@@ -106,10 +106,10 @@ def create_viewmat(azimuth_deg, elevation_deg, x, y, z):
 
 def chk(name, t):
     if not torch.is_tensor(t):
-        logging.info("%s: (not tensor) %r", name, type(t))
+        logger.info("%s: (not tensor) %r", name, type(t))
         return
     finite = bool(torch.isfinite(t).all())
-    logging.info("%s: shape=%s dtype=%s device=%s contig=%s finite=%s min=%s max=%s",
+    logger.info("%s: shape=%s dtype=%s device=%s contig=%s finite=%s min=%s max=%s",
                  name, tuple(t.shape), t.dtype, t.device, t.is_contiguous(), finite,
                  t.min().item() if t.numel() else "n/a",
                  t.max().item() if t.numel() else "n/a")
