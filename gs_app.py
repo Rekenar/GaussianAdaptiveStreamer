@@ -211,18 +211,21 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
 
     pil_img = Image.fromarray(img)
     
-    pil_img_original =  pil_img
-
     # Downsample AFTER rendering
     if factor > 1:
-        out_w = max(1, w // factor)
-        out_h = max(1, h // factor)
-        pil_img = pil_img.resize((out_w, out_h), resample=Image.LANCZOS)
+        low_w = max(1, w // factor)
+        low_h = max(1, h // factor)
+
+        # Downsample (simulate lower render quality)
+        pil_img = pil_img.resize((low_w, low_h), resample=Image.LANCZOS)
         print(f"[Render] Image size after downsampling: {pil_img.size}", flush=True)
         logger.debug(
             "[Render] downsampled image size: %s",
             pil_img.size
         )
+        if saveJPG or savePNG:
+            # Upscale back to original resolution for images
+            pil_img = pil_img.resize((w, h), resample=Image.LANCZOS)
 
     else:
         print(f"[Render] No downsampling applied (profile={profile})", flush=True)
@@ -232,14 +235,15 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
         )
 
     buf_jpg_original = io.BytesIO()
+
     buf_png_original = io.BytesIO()
 
     if savePNG: 
-        pil_img_original.save(buf_png_original, format="PNG")
+        pil_img.save(buf_png_original, format="PNG")
         buf_png_original.seek(0)
         
     if saveJPG:
-        pil_img_original.save(buf_jpg_original, format="JPEG")
+        pil_img.save(buf_jpg_original, format="JPEG")
         buf_jpg_original.seek(0)
     
     buf_jpg = io.BytesIO()
