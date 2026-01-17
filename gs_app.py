@@ -66,6 +66,14 @@ file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
 
+logging.warning("CUDA_VISIBLE_DEVICES=%s", os.getenv("CUDA_VISIBLE_DEVICES"))
+logging.warning("CUDA_LAUNCH_BLOCKING=%s", os.getenv("CUDA_LAUNCH_BLOCKING"))
+logging.warning("TORCH_SHOW_CPP_STACKTRACES=%s", os.getenv("TORCH_SHOW_CPP_STACKTRACES"))
+logging.warning("torch=%s cuda=%s devices=%d device0=%s",
+                torch.__version__, torch.cuda.is_available(),
+                torch.cuda.device_count(),
+                torch.cuda.get_device_name(0) if torch.cuda.is_available() else "n/a")
+
 
 TEMPLATES_DIR = os.path.join(ROOT, "templates")
 STATIC_DIR = os.path.join(ROOT, "static")
@@ -95,6 +103,18 @@ def create_viewmat(azimuth_deg, elevation_deg, x, y, z):
     c2w[:3, 3] = trans
     w2c = np.linalg.inv(c2w)
     return torch.tensor(w2c, dtype=torch.float32)
+
+def chk(name, t):
+    if not torch.is_tensor(t):
+        logging.info("%s: (not tensor) %r", name, type(t))
+        return
+    finite = bool(torch.isfinite(t).all())
+    logging.info("%s: shape=%s dtype=%s device=%s contig=%s finite=%s min=%s max=%s",
+                 name, tuple(t.shape), t.dtype, t.device, t.is_contiguous(), finite,
+                 t.min().item() if t.numel() else "n/a",
+                 t.max().item() if t.numel() else "n/a")
+    if not finite:
+        raise ValueError(f"{name} has NaN/Inf")
 
 # ---------- load model once on import ----------
 MODEL_PLY = os.path.join(STATIC_DIR, "models", "model_high.ply")
@@ -148,6 +168,14 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
     t0 = time.perf_counter()
     
     logger.info("Before rasterization")
+    
+    chk("means", means)
+    chk("scales", scales)
+    chk("quats", quats)
+    chk("opacities", opacities)
+    chk("colors", shs)
+    chk("viewmat", viewmat)
+    chk("viewmat", viewmat)
 
     colors_rendered, alphas, _ = rasterization(
         means=means,
