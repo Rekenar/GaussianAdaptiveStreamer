@@ -146,6 +146,8 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
     if device.type == "cuda":
         torch.cuda.synchronize()
     t0 = time.perf_counter()
+    
+    logger.info("Before rasterization")
 
     colors_rendered, alphas, _ = rasterization(
         means=means,
@@ -162,6 +164,8 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
         backgrounds=None,
         render_mode="RGB",
     )
+    
+    logger.info("After rasterization")
 
     img = colors_rendered[0].detach().cpu().numpy()
     img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
