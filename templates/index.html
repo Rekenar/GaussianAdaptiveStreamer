@@ -19,6 +19,14 @@
         <div class="options">
             <h3>Camera Parameters</h3>
 
+            <label for="profile">Profile</label>
+            <select id="profile">
+                <option value="0" selected>0</option>
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="4">3</option>
+            </select>
+
             <label class="row">
                 <span>Auto Quality (ABR)</span>
                 <input type="checkbox" id="abr-enabled" checked />
@@ -91,16 +99,21 @@
                 </div>
             </div>
 
-            <button class="apply-button" onclick="applyConfig()">Apply</button>
-        </div>
-        <div>
+                    <div>
             <label for="fileName">Filename for experiment data</label>
             <input id="fileName" type="text" />
+            </div>
+            <div>
+                <label for="networkName">Network to check</label>
+                <input id="networkName" type="text" />
+            </div>
+            <div>
+                <label for="savePNG">Save Images(Test)</label>
+                <input type="checkbox" id="savePNG" />
+            </div>
+            <button class="apply-button" onclick="applyConfig()">Apply</button>
         </div>
-        <div>
-            <label for="networkName">Network to check</label>
-            <input id="networkName" type="text" />
-        </div>
+
     </aside>
 
     <!-- Main -->
@@ -211,6 +224,8 @@
         let rotStep = 1;
         let posStep = 0.1;
         let fileName = "";
+        let profileChoosen = 0;
+        let savePNG = false;
 
         let abrEnabledActive = abrToggle.checked;
 
@@ -284,7 +299,8 @@
             posStep = parseFloat(document.getElementById('pos-step').value);
             fileName = document.getElementById('fileName')?.value;
             networkName = document.getElementById('networkName')?.value;
-
+            profileChoosen = document.getElementById('profile')?.value;
+            savePNG = document.getElementById("savePNG")?.checked;
 
 
             // Commit ABR state from the checkbox
@@ -315,6 +331,8 @@
                 if (abrEnabled) {
                     profile = abr.pickProfile(width, height);   // decide for this request
                     abr.startRequest(profile, width, height);   // timestamp the request
+                } else {
+                    profile = profileChoosen;
                 }
 
                 const tFetchStart = performance.now();
@@ -323,7 +341,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile
+                        angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile, fileName, savePNG
                     }),
                 })
                     .then(async (response) => {

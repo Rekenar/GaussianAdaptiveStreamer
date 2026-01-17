@@ -132,7 +132,7 @@ shs = torch.from_numpy(shs_np).to(device)
 del means_np, quats_np, scales_np, opacities_np, shs_np
 
 def render_image(azimuth_deg, elevation_deg, x, y, z,
-                 fx, fy, cx, cy, width, height, profile) -> tuple[bytes, float]:
+                 fx, fy, cx, cy, width, height, profile, savePNG) -> tuple[bytes, float, bytes, bytes]:
     print(f"GPU memory before: {torch.cuda.memory_allocated() / 1024**3:.2f} GB", flush=True) 
 
     logger.debug(
@@ -169,13 +169,13 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
     
     logger.info("Before rasterization")
     
-    chk("means", means)
-    chk("scales", scales)
-    chk("quats", quats)
-    chk("opacities", opacities)
-    chk("colors", shs)
-    chk("viewmat", viewmat)
-    chk("viewmat", viewmat)
+    #chk("means", means)
+    #chk("scales", scales)
+    #chk("quats", quats)
+    #chk("opacities", opacities)
+    #chk("colors", shs)
+    #chk("viewmat", viewmat)
+    #chk("viewmat", viewmat)
 
 
     
@@ -210,6 +210,8 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
     img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
 
     pil_img = Image.fromarray(img)
+    
+    pil_img_original =  pil_img
 
     # Downsample AFTER rendering
     if factor > 1:
@@ -229,12 +231,21 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
             profile
         )
 
+    buf_jpg_original = io.BytesIO()
 
+    buf_png_original = io.BytesIO()
 
+    if savePNG: 
+        pil_img_original.save(buf_jpg_original, format="JPEG")
+        buf_jpg_original.seek(0)
+
+        pil_img_original.save(buf_png_original, format="PNG")
+        buf_png_original.seek(0)
+    
     buf_jpg = io.BytesIO()
-    pil_img.save(buf_jpg, format="JPEG", quality=70)
+    pil_img.save(buf_jpg, format="JPEG", quality=70, subsampling=0)
     buf_jpg.seek(0)
-
+    
     if device.type == "cuda":
         torch.cuda.synchronize()
     t1 = time.perf_counter()
@@ -253,16 +264,16 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
     )
 
     
-    return buf_jpg.getvalue(), render_ms
+    return buf_jpg.getvalue(), render_ms, buf_jpg_original.getvalue(), buf_png_original.getvalue()
 
 
-def save_render_bytes(jpeg_bytes: bytes, out_dir: str = "captures", base_name: str | None = None) -> str:
+def save_render_bytes(jpeg_bytes: bytes, out_dir: str = "captures", base_name: str | None = None, type: str = '.jpg') -> str:
     out_dir_abs = out_dir if os.path.isabs(out_dir) else os.path.join(ROOT, out_dir)
     os.makedirs(out_dir_abs, exist_ok=True)
 
     if not base_name:
         ts_ms = int(time.time() * 1000)
-        base_name = f"frame-{ts_ms}.jpg"
+        base_name = f"frame-{ts_ms}{type}"
 
     base_name = os.path.basename(base_name)
     out_path = os.path.join(out_dir_abs, base_name)
@@ -272,12 +283,21 @@ def save_render_bytes(jpeg_bytes: bytes, out_dir: str = "captures", base_name: s
 
     return out_path
 
+
 # ------------------- HTTP handlers -------------------
 async def home(request:Request):
     return FileResponse("templates/index.html")
 
 async def render_handler(request: Request):
     data = await request.json()
+    
+    print(f"[Handler] Received request data: {data}", flush=True)
+    
+    logger.info(
+        "[Handler] render request received: %s",
+        data
+    )
+        
     azimuth = float(data.get("angle", 180))
     elevation = float(data.get("elevation", 0))
     x = float(data.get("x", 0))
@@ -290,20 +310,22 @@ async def render_handler(request: Request):
     width = float(data.get("width", 800))
     height = float(data.get("height", 600))
     profile = int(data.get("profile", 0))  # 0..3 -> 1x,2x,4x,8x downsample
-
-    print(f"[Handler] Received request data: {data}", flush=True)
-    logger.info(
-        "[Handler] render request received: %s",
-        data
-    )
-
+    fileName = data.get("fileName", "default")
+    savePNG = bool(data.get("savePNG", False))
 
     loop = asyncio.get_running_loop()
-    jpeg_bytes, render_ms = await loop.run_in_executor(
+    jpeg_bytes, render_ms, jpeg_original, png_original = await loop.run_in_executor(
         RENDER_EXECUTOR,
         render_image,
-        azimuth, elevation, x, y, z, fx, fy, cx, cy, width, height, profile
+        azimuth, elevation, x, y, z, fx, fy, cx, cy, width, height, profile, savePNG
     )
+    
+
+    if savePNG:
+        logger.info("Saving JPGE")
+        save_render_bytes(jpeg_bytes=jpeg_original, out_dir=f"captures/{fileName}/jpg", type=".jpg")
+        logger.info("Saving PNG")
+        save_render_bytes(png_original, f"captures/{fileName}/png", type=".png")
 
     return Response(
         jpeg_bytes,
