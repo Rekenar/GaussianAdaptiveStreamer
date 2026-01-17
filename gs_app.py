@@ -20,6 +20,10 @@ from scipy.spatial.transform import Rotation as R
 from gsplat import rasterization
 from PIL import Image
 
+from concurrent.futures import ThreadPoolExecutor
+
+RENDER_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+
 from starlette.applications import Starlette
 from starlette.responses import Response, JSONResponse, PlainTextResponse
 from starlette.routing import Route, Mount
@@ -27,8 +31,42 @@ from starlette.staticfiles import StaticFiles
 from starlette.requests import Request
 from starlette.responses import FileResponse
 
+import logging
+from logging.handlers import RotatingFileHandler
+
+from datetime import datetime
+
 
 ROOT = os.path.dirname(__file__)
+LOG_DIR = os.path.join(ROOT, "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+
+
+today = datetime.now().strftime("%Y-%m-%d")
+LOG_FILE = os.path.join(LOG_DIR, f"gs_server_{today}.log")
+
+logging.basicConfig(level=logging.INFO)  # root config
+
+logger = logging.getLogger("gs")
+logger.setLevel(logging.INFO)
+
+file_handler = RotatingFileHandler(
+    LOG_FILE,
+    maxBytes=50 * 1024 * 1024,  # 50 MB
+    backupCount=5,
+    encoding="utf-8",
+)
+
+formatter = logging.Formatter(
+    "%(asctime)s | %(levelname)s | %(threadName)s | %(message)s"
+)
+file_handler.setFormatter(formatter)
+
+logger.addHandler(file_handler)
+
+
+
 TEMPLATES_DIR = os.path.join(ROOT, "templates")
 STATIC_DIR = os.path.join(ROOT, "static")
 
@@ -75,7 +113,12 @@ del means_np, quats_np, scales_np, opacities_np, shs_np
 
 def render_image(azimuth_deg, elevation_deg, x, y, z,
                  fx, fy, cx, cy, width, height, profile) -> tuple[bytes, float]:
-    print(f"GPU memory before: {torch.cuda.memory_allocated() / 1024**3:.2f} GB") 
+    print(f"GPU memory before: {torch.cuda.memory_allocated() / 1024**3:.2f} GB", flush=True) 
+
+    logger.debug(
+        "GPU memory before render: %.2f GB",
+        torch.cuda.memory_allocated() / 1024**3
+    )
 
     # Clamp profile and compute downscale factor (1, 2, 4, 8)
     p = max(0, min(3, int(profile)))
@@ -84,9 +127,16 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
     w = int(width)
     h = int(height)
 
+    logger.info(
+    "[Render] params az=%.1f el=%.1f pos=(%.2f,%.2f,%.2f) "
+    "fx=%.1f fy=%.1f cx=%.1f cy=%.1f size=%dx%d profile=%d factor=%d",
+    azimuth_deg, elevation_deg, x, y, z,
+    fx, fy, cx, cy, w, h, profile, factor
+    )
+
     print(f"[Render] Requested params -> azimuth={azimuth_deg}, elevation={elevation_deg}, "
           f"x={x}, y={y}, z={z}, fx={fx}, fy={fy}, cx={cx}, cy={cy}, "
-          f"width={w}, height={h}, profile={profile} (factor={factor})")
+          f"width={w}, height={h}, profile={profile} (factor={factor})", flush=True)
 
     viewmat = create_viewmat(azimuth_deg, elevation_deg, x, y, z).to(device).unsqueeze(0)
     K = torch.tensor([[fx, 0, cx],
@@ -123,9 +173,19 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
         out_w = max(1, w // factor)
         out_h = max(1, h // factor)
         pil_img = pil_img.resize((out_w, out_h), resample=Image.LANCZOS)
-        print(f"[Render] Image size after downsampling: {pil_img.size}")
+        print(f"[Render] Image size after downsampling: {pil_img.size}", flush=True)
+        logger.debug(
+            "[Render] downsampled image size: %s",
+            pil_img.size
+        )
+
     else:
-        print(f"[Render] No downsampling applied (profile={profile})")
+        print(f"[Render] No downsampling applied (profile={profile})", flush=True)
+        logger.debug(
+            "[Render] no downsampling applied (profile=%d)",
+            profile
+        )
+
 
 
     buf_jpg = io.BytesIO()
@@ -137,8 +197,19 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
     t1 = time.perf_counter()
     render_ms = (t1 - t0) * 1000.0
 
-    print(f"[Render] Duration: {render_ms:.2f} ms")
-    print(f"GPU memory after: {torch.cuda.memory_allocated() / 1024**3:.2f} GB") 
+    print(f"[Render] Duration: {render_ms:.2f} ms", flush=True)
+    logger.info(
+        "[Render] duration: %.2f ms",
+        render_ms
+    )   
+    print(f"GPU memory after: {torch.cuda.memory_allocated() / 1024**3:.2f} GB", flush=True) 
+    
+    logger.debug(
+        "GPU memory after render: %.2f GB",
+        torch.cuda.memory_allocated() / 1024**3
+    )
+
+    
     return buf_jpg.getvalue(), render_ms
 
 
@@ -177,11 +248,19 @@ async def render_handler(request: Request):
     height = float(data.get("height", 600))
     profile = int(data.get("profile", 0))  # 0..3 -> 1x,2x,4x,8x downsample
 
-    print(f"[Handler] Received request data: {data}")
+    print(f"[Handler] Received request data: {data}", flush=True)
+    logger.info(
+        "[Handler] render request received: %s",
+        data
+    )
 
-    jpeg_bytes, render_ms = await asyncio.to_thread(
-        render_image, azimuth, elevation, x, y, z, fx, fy, cx, cy, width, height, profile
-    )   
+
+    loop = asyncio.get_running_loop()
+    jpeg_bytes, render_ms = await loop.run_in_executor(
+        RENDER_EXECUTOR,
+        render_image,
+        azimuth, elevation, x, y, z, fx, fy, cx, cy, width, height, profile
+    )
 
     return Response(
         jpeg_bytes,
@@ -199,7 +278,12 @@ def get_current_kbps(dev: str = "wlp82s0") -> float | None:
         if match:
             return float(match.group(1))
     except Exception as e:
-        print(f"[tc error on {dev}]: {e}")
+        print(f"[tc error on {dev}]: {e}", flush=True)
+        logger.warning(
+            "[tc] failed to read tc status on dev=%s: %s",
+            dev, e
+        )
+
     return None
 
 
@@ -216,7 +300,7 @@ async def metrics_predict(request):
         body = await request.json()
         pred_bps  = float(body["pred_bps"])
         profile   = body.get("profile")
-        file_name = body.get("fileName"), default="default"
+        file_name = body.get("fileName")
         network = body.get("networkName")
         tc_status = get_current_kbps(network)
     except Exception as e:
@@ -237,6 +321,11 @@ async def metrics_predict(request):
         f.write(json.dumps(rec) + "\n")
 
     print(f"[predict] file={file_name} {rec}", flush=True)
+    logger.info(
+        "[predict] file=%s record=%s",
+        file_name, rec
+    )
+
     return JSONResponse({"ok": True, "file": file_name})
 
 
