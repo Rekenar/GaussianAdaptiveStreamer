@@ -231,6 +231,7 @@
         let profileChoosen = 0;
         let savePNG = false;
         let saveJPG = false;
+        let renderMs = 0;
 
         let abrEnabledActive = abrToggle.checked;
 
@@ -353,7 +354,7 @@
                     .then(async (response) => {
                         const contentLength = Number(response.headers.get('Content-Length') || 0);
                         const renderHeader = response.headers.get('X-Render-Time-Ms');
-                        const renderMs = renderHeader != null ? parseFloat(renderHeader) : NaN;
+                        renderMs = renderHeader != null ? parseFloat(renderHeader) : NaN;
 
                         const blob = await response.blob();
                         return { blob, contentLength, renderMs };
@@ -449,7 +450,7 @@
         const fileInput = document.getElementById('rec-file');
         const startBtn = document.getElementById('start-playback');
 
-        async function reportPred(networkName, fileName, pred_bps, profile) {
+        async function reportPred(networkName, fileName, pred_bps, profile, renderMS) {
             try {
                 await fetch("/metrics/predict", {
                     method: "POST",
@@ -459,7 +460,8 @@
                         networkName,
                         fileName,
                         pred_bps,
-                        profile
+                        profile,
+                        renderMs
                     })
                 });
             } catch (e) {
@@ -494,7 +496,7 @@
 
                     console.log(predictedBps, profileIdx)
 
-                    await reportPred(networkName, fileName, predictedBps, profileIdx);
+                    await reportPred(networkName, fileName, predictedBps, profileIdx, renderMs);
                 }
 
             } catch (err) {

@@ -374,6 +374,7 @@ async def metrics_predict(request):
         profile   = body.get("profile")
         file_name = body.get("fileName") or "default"
         network = body.get("networkName")
+        render_ms = body.get("renderMs")
         tc_status = get_current_kbps(network)
     except Exception as e:
         return PlainTextResponse(f"Invalid JSON: {e}", status_code=400)
@@ -387,7 +388,8 @@ async def metrics_predict(request):
         "t_server": now_ms(),
         "pred_bps": pred_bps,
         "profile": profile,
-        "tc_status" : tc_status
+        "tc_status" : tc_status,
+        "renderMs" : render_ms
     }
     with open(f"{out_path}/testdata.ndjson", "a", buffering=1) as f:
         f.write(json.dumps(rec) + "\n")
