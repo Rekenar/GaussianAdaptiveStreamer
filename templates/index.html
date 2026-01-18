@@ -115,6 +115,8 @@
                 <label for="saveJPG">Save JPGs(Test)</label>
                 <input type="checkbox" id="saveJPG" />
             </div>
+            <button class="btn btn-primary" id="download-export">Download ZIP</button>
+
             <button class="apply-button" onclick="applyConfig()">Apply</button>
         </div>
 
@@ -507,6 +509,26 @@
             }
         });
     </script>
+    <script>
+        const dlBtn = document.getElementById('download-export');
+        if (dlBtn) {
+            dlBtn.addEventListener('click', () => {
+            const fn = (document.getElementById('fileName')?.value || '').trim();
+            if (!fn) return;
+
+            const url = `/export?fileName=${encodeURIComponent(fn)}`;
+
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${fn}.zip`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            });
+        }
+    </script>
+
+
 </body>
 
 </html>

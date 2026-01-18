@@ -19,6 +19,8 @@ import torch
 from scipy.spatial.transform import Rotation as R
 from gsplat import rasterization
 from PIL import Image
+import zipfile
+
 
 from concurrent.futures import ThreadPoolExecutor
 
@@ -402,13 +404,49 @@ async def metrics_predict(request):
 
     return JSONResponse({"ok": True, "file": file_name})
 
+async def export_experiment(request: Request):
+    file_name = request.query_params.get("fileName")
+    if not file_name:
+        return Response(b"", status_code=404)
+
+    cap_dir = os.path.join(ROOT, "captures", file_name)
+    ndjson_path = os.path.join(EXPERIMENT_DIR, file_name, "testdata.ndjson")
+
+    if not os.path.isdir(cap_dir) or not os.path.isfile(ndjson_path):
+        return Response(b"", status_code=404)
+
+    buf = io.BytesIO()
+
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as z:
+        z.write(ndjson_path, arcname=os.path.join("experiment", file_name, "testdata.ndjson"))
+
+        for root_dir, _, files in os.walk(cap_dir):
+            for fn in files:
+                full_path = os.path.join(root_dir, fn)
+                rel_path = os.path.relpath(full_path, ROOT)
+                z.write(full_path, arcname=rel_path)
+
+    zip_bytes = buf.getvalue()
+
+    return Response(
+        zip_bytes,
+        media_type="application/zip",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": f'attachment; filename="{file_name}.zip"',
+        },
+    )
+
+
 
 starlette = Starlette(
     routes=[
         Route("/", home, methods=["GET"]),
         Route("/render", render_handler, methods=["POST"]),
         Route("/metrics/predict", metrics_predict, methods=["POST"]),
+        Route("/export", export_experiment, methods=["GET"]),
         Mount("/static", StaticFiles(directory=STATIC_DIR), name="static"),
+        
     ]
 )
 
