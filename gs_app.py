@@ -219,7 +219,7 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
         low_h = max(1, h // factor)
 
         # Downsample (simulate lower render quality)
-        pil_img = pil_img.resize((low_w, low_h), resample=Image.LANCZOS)
+        pil_img = pil_img.resize((low_w, low_h), resample=Image.BILINEAR)
         print(f"[Render] Image size after downsampling: {pil_img.size}", flush=True)
         logger.debug(
             "[Render] downsampled image size: %s",
@@ -227,7 +227,7 @@ def render_image(azimuth_deg, elevation_deg, x, y, z,
         )
         if saveJPG or savePNG:
             # Upscale back to original resolution for images
-            pil_img = pil_img.resize((w, h), resample=Image.LANCZOS)
+            pil_img = pil_img.resize((w, h), resample=Image.BILINEAR)
 
     else:
         print(f"[Render] No downsampling applied (profile={profile})", flush=True)
