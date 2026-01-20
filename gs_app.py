@@ -20,7 +20,7 @@ from scipy.spatial.transform import Rotation as R
 from gsplat import rasterization
 from PIL import Image
 import zipfile
-
+from turbojpeg import TurboJPEG
 
 from concurrent.futures import ThreadPoolExecutor
 
@@ -106,18 +106,6 @@ def create_viewmat(azimuth_deg, elevation_deg, x, y, z):
     w2c = np.linalg.inv(c2w)
     return torch.tensor(w2c, dtype=torch.float32)
 
-def chk(name, t):
-    if not torch.is_tensor(t):
-        logger.info("%s: (not tensor) %r", name, type(t))
-        return
-    finite = bool(torch.isfinite(t).all())
-    logger.info("%s: shape=%s dtype=%s device=%s contig=%s finite=%s min=%s max=%s",
-                 name, tuple(t.shape), t.dtype, t.device, t.is_contiguous(), finite,
-                 t.min().item() if t.numel() else "n/a",
-                 t.max().item() if t.numel() else "n/a")
-    if not finite:
-        raise ValueError(f"{name} has NaN/Inf")
-
 # ---------- load model once on import ----------
 MODEL_PLY = os.path.join(STATIC_DIR, "models", "model_high.ply")
 means_np, quats_np, scales_np, opacities_np, shs_np = load_gs_ply(MODEL_PLY)
@@ -135,140 +123,134 @@ del means_np, quats_np, scales_np, opacities_np, shs_np
 
 def render_image(azimuth_deg, elevation_deg, x, y, z,
                  fx, fy, cx, cy, width, height, profile, savePNG, saveJPG) -> tuple[bytes, float, bytes, bytes]:
-    print(f"GPU memory before: {torch.cuda.memory_allocated() / 1024**3:.2f} GB", flush=True) 
-
-    logger.debug(
-        "GPU memory before render: %.2f GB",
-        torch.cuda.memory_allocated() / 1024**3
-    )
-
-    # Clamp profile and compute downscale factor (1, 2, 4, 8)
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("GPU memory before render: %.2f GB", torch.cuda.memory_allocated() / 1024**3)
+    
     p = max(0, min(3, int(profile)))
     factor = 1 << p
-
+    
     w = int(width)
     h = int(height)
-
+    
     logger.info(
-    "[Render] params az=%.1f el=%.1f pos=(%.2f,%.2f,%.2f) "
-    "fx=%.1f fy=%.1f cx=%.1f cy=%.1f size=%dx%d profile=%d factor=%d",
-    azimuth_deg, elevation_deg, x, y, z,
-    fx, fy, cx, cy, w, h, profile, factor
+        "[Render] params az=%.1f el=%.1f pos=(%.2f,%.2f,%.2f) "
+        "size=%dx%d profile=%d factor=%d",
+        azimuth_deg, elevation_deg, x, y, z,
+        w, h, profile, factor
     )
-
-    print(f"[Render] Requested params -> azimuth={azimuth_deg}, elevation={elevation_deg}, "
-          f"x={x}, y={y}, z={z}, fx={fx}, fy={fy}, cx={cx}, cy={cy}, "
-          f"width={w}, height={h}, profile={profile} (factor={factor})", flush=True)
-
+    
     viewmat = create_viewmat(azimuth_deg, elevation_deg, x, y, z).to(device).unsqueeze(0)
     K = torch.tensor([[fx, 0, cx],
                       [0, fy, cy],
                       [0, 0, 1]], dtype=torch.float32, device=device).unsqueeze(0)
-
-    if device.type == "cuda":
-        torch.cuda.synchronize()
+    
+    torch.cuda.synchronize()
     t0 = time.perf_counter()
     
-    logger.info("Before rasterization")
+    logger.info("Calling rasterization at full resolution %dx%d...", w, h)
     
-    #chk("means", means)
-    #chk("scales", scales)
-    #chk("quats", quats)
-    #chk("opacities", opacities)
-    #chk("colors", shs)
-    #chk("viewmat", viewmat)
-    #chk("viewmat", viewmat)
-
-
+    with torch.no_grad():
+        try:
+            colors_rendered, alphas, _ = rasterization(
+                means=means,
+                quats=quats,
+                scales=scales,
+                opacities=opacities,
+                colors=shs,
+                viewmats=viewmat,
+                Ks=K,
+                width=w,
+                height=h,
+                packed=False,
+                sh_degree=0,
+                backgrounds=None,
+                render_mode="RGB",
+            )
+        except Exception:
+            logger.exception("Rasterization failed")
+            raise
     
-    logger.info("Calling rasterization now...")
-    try:
-        colors_rendered, alphas, _ = rasterization(
-            means=means,
-            quats=quats,
-            scales=scales,
-            opacities=opacities,
-            colors=shs,
-            viewmats=viewmat,
-            Ks=K,
-            width=w,
-            height=h,
-            packed=False,
-            sh_degree=0,
-            backgrounds=None,
-            render_mode="RGB",
-        )
-        logger.info("Returned from rasterization, syncing...")
-        torch.cuda.synchronize()
-        logger.info("After synchronize")
-    except Exception:
-        logger.exception("Rasterization failed")
-        raise
-
+    torch.cuda.synchronize()
+    t_render = time.perf_counter()
     
-    logger.info("After rasterization")
-
-    img = colors_rendered[0].detach().cpu().numpy()
-    img = (np.clip(img, 0, 1) * 255).astype(np.uint8)
-
-    pil_img = Image.fromarray(img)
+    img_full_gpu_uint8 = (colors_rendered[0].clamp(0, 1) * 255).byte()
     
-    # Downsample AFTER rendering
+    # GPU-based downsampling for streaming
     if factor > 1:
-        low_w = max(1, w // factor)
+        img_downsampled = img_full_gpu_uint8.permute(2, 0, 1).unsqueeze(0) / 255.0
+        
         low_h = max(1, h // factor)
-
-        # Downsample (simulate lower render quality)
-        pil_img = pil_img.resize((low_w, low_h), resample=Image.BILINEAR)
-        print(f"[Render] Image size after downsampling: {pil_img.size}", flush=True)
-        logger.debug(
-            "[Render] downsampled image size: %s",
-            pil_img.size
+        low_w = max(1, w // factor)
+        
+        img_downsampled = torch.nn.functional.interpolate(
+            img_downsampled,
+            size=(low_h, low_w),
+            mode='area', 
+            align_corners=None
         )
-        if saveJPG or savePNG:
-            # Upscale back to original resolution for images
-            pil_img = pil_img.resize((w, h), resample=Image.BILINEAR)
+        
+        img_downsampled = (img_downsampled.squeeze(0).permute(1, 2, 0) * 255).byte()
+        
+        t_downsample = time.perf_counter()
+                
+        img_stream = img_downsampled.cpu().numpy()
+        
+        logger.info("[Render] downsampled to %dx%d on GPU", low_w, low_h)
+    else:
+        t_downsample = t_render
+        img_stream = img_full_gpu_uint8.cpu().numpy()
+
+    
+    t_transfer_stream = time.perf_counter()
+    
+    pil_img_stream = Image.fromarray(img_stream)
+    
+    buf_jpg_original = io.BytesIO()
+    buf_png_original = io.BytesIO()
+    
+    # For saved files, use full resolution
+    if saveJPG or savePNG:
+        img_full = img_full_gpu_uint8.cpu().numpy()
+        pil_img_full = Image.fromarray(img_full)
+        t_transfer_full = time.perf_counter()
+        
+        jpeg_encoder = TurboJPEG()
+
+        
+        if savePNG:
+            pil_img_full.save(buf_png_original, format="PNG", optimize=True)
+            buf_png_original.seek(0)
+        
+        if saveJPG:
+            buf_jpg_original = io.BytesIO(jpeg_encoder.encode(img_full, quality=95))
 
     else:
-        print(f"[Render] No downsampling applied (profile={profile})", flush=True)
-        logger.debug(
-            "[Render] no downsampling applied (profile=%d)",
-            profile
-        )
-
-    buf_jpg_original = io.BytesIO()
-
-    buf_png_original = io.BytesIO()
-
-    if savePNG: 
-        pil_img.save(buf_png_original, format="PNG")
-        buf_png_original.seek(0)
-        
-    if saveJPG:
-        pil_img.save(buf_jpg_original, format="JPEG")
-        buf_jpg_original.seek(0)
+        t_transfer_full = t_transfer_stream
     
+    # Stream response uses downsampled image
+    stream_quality = max(50, 70 - (factor * 5))  # 70, 65, 60, 55 for factors 1,2,4,8
+
     buf_jpg = io.BytesIO()
-    pil_img.save(buf_jpg, format="JPEG", quality=70, subsampling=0)
+    pil_img_stream.save(buf_jpg, format="JPEG", quality=stream_quality, optimize=False)
     buf_jpg.seek(0)
     
-    if device.type == "cuda":
-        torch.cuda.synchronize()
+    torch.cuda.synchronize()
     t1 = time.perf_counter()
-    render_ms = (t1 - t0) * 1000.0
-
-    print(f"[Render] Duration: {render_ms:.2f} ms", flush=True)
-    logger.info(
-        "[Render] duration: %.2f ms",
-        render_ms
-    )   
-    print(f"GPU memory after: {torch.cuda.memory_allocated() / 1024**3:.2f} GB", flush=True) 
     
-    logger.debug(
-        "GPU memory after render: %.2f GB",
-        torch.cuda.memory_allocated() / 1024**3
+    render_ms = (t1 - t0) * 1000.0
+    
+    logger.info(
+        "[Render] total=%.2fms (raster=%.2fms, gpu_downsample=%.2fms, "
+        "transfer_stream=%.2fms, transfer_full=%.2fms, encode=%.2fms)",
+        render_ms,
+        (t_render - t0) * 1000,
+        (t_downsample - t_render) * 1000,
+        (t_transfer_stream - t_downsample) * 1000,
+        (t_transfer_full - t_transfer_stream) * 1000,
+        (t1 - t_transfer_full) * 1000
     )
-
+    
+    logger.debug("GPU memory after render: %.2f GB", torch.cuda.memory_allocated() / 1024**3)
     
     return buf_jpg.getvalue(), render_ms, buf_jpg_original.getvalue(), buf_png_original.getvalue()
 
