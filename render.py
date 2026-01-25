@@ -1,7 +1,6 @@
-import time, os, io
+import time, os
 
 from gsplat import rasterization
-from turbojpeg import TurboJPEG
 
 import torch.nn.functional as F
 
@@ -13,7 +12,6 @@ from scipy.spatial.transform import Rotation as R
 from logger import logger
 from statics import CAPTURES_DIR
 
-jpeg = TurboJPEG()
 
 
 def save_render_bytes(bytes: bytes, profile: int, base_name: str | None = None, type: str = 'jpg') -> str:
