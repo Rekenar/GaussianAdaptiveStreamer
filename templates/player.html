@@ -205,6 +205,9 @@
             }
         };
 
+        const urlParams = new URLSearchParams(window.location.search);
+        const modelId = urlParams.get("modelId"); // string or null
+
         const objectViewer = document.getElementById('object-viewer');
         const positionDisplay = document.getElementById('position-display');
         const sidebar = document.getElementById('sidebar');
@@ -350,7 +353,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile, fileName, savePNG, saveJPG
+                        modelId, angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile, fileName, savePNG, saveJPG
                     }),
                 })
                     .then(async (response) => {

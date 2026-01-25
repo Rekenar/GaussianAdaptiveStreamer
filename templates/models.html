@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Select Model</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <style>
+    /* Minimal extra styling; keep or move into style.css */
+    .models-wrap { padding: 18px; max-width: 1200px; margin: 0 auto; }
+    .models-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+    .models-grid { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+    .model-card { border: 1px solid rgba(0,0,0,0.12); border-radius: 12px; overflow: hidden; background: #ffffff00; cursor: pointer; }
+    .model-card:focus { outline: 2px solid rgba(0,0,0,0.35); outline-offset: 2px; }
+    .model-thumb { width: 100%; aspect-ratio: 16/9; background: rgba(0,0,0,0.04); display: block; object-fit: cover; }
+    .model-body { padding: 12px; }
+    .model-title { font-weight: 700; margin: 0 0 6px 0; }
+    .model-meta { margin: 0; opacity: 0.75; font-size: 0.9rem; }
+    .muted { opacity: 0.7; }
+    .err { color: #b00020; }
+    .toolbar { display:flex; gap: 10px; align-items: center; }
+    .input { padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(0,0,0,0.18); }
+    .btn { padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(0,0,0,0.18); background: #fff; cursor: pointer; }
+
+    /* Overlay */
+.overlay{
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+
+  /* match app look: bluish/dark scrim */
+  background: rgba(2, 6, 23, .60);
+  backdrop-filter: blur(10px) saturate(1.1);
+}
+
+.overlay-card{
+  width: min(560px, 92vw);
+  border-radius: 18px;
+  padding: 16px;
+  box-shadow: var(--shadow-1);
+  border: 1px solid rgba(148,163,184,.18);
+}
+
+.overlay-row{
+  display: flex;
+  gap: 14px;
+  align-items: center;
+}
+
+.overlay-text{ flex: 1; }
+
+.overlay-title{
+  font-weight: 800;
+  letter-spacing: .2px;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.overlay-sub{
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.overlay-actions{
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+/* Spinner in your style */
+.overlay-spinner{
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 3px solid rgba(148,163,184,.25);
+  border-top-color: var(--brand);
+  animation: spin .9s linear infinite;
+  box-shadow: var(--shadow-2);
+}
+
+/* Optional: animated indeterminate bar using your progress component */
+.overlay-bar{
+  width: 35%;
+  animation: indeterminate 1.1s ease-in-out infinite;
+}
+
+@keyframes indeterminate{
+  0%   { transform: translateX(-40%); }
+  50%  { transform: translateX(120%); }
+  100% { transform: translateX(260%); }
+}
+
+  </style>
+</head>
+<body>
+  <div class="models-wrap">
+    <div class="models-top">
+      <div>
+        <h2 style="margin:0;">Choose a model</h2>
+        <div class="muted" id="status">Loading models…</div>
+      </div>
+      <div class="toolbar">
+        <input class="input" id="search" placeholder="Filter…" />
+        <button class="btn" id="reload">Reload</button>
+      </div>
+    </div>
+
+    <div class="models-grid" id="grid" aria-live="polite"></div>
+    <div id="error" class="err" style="margin-top:12px;"></div>
+  </div>
+
+ <div id="loadingOverlay" class="overlay" role="dialog" aria-modal="true" aria-live="polite">
+  <div class="overlay-card card">
+    <div class="overlay-row">
+      <div class="overlay-spinner" aria-hidden="true"></div>
+
+      <div class="overlay-text">
+        <div id="loadingTitle" class="overlay-title">Loading model…</div>
+        <div id="loadingSub" class="overlay-sub muted">
+          This can take a few seconds (GPU upload).
+        </div>
+
+        <div class="progress" aria-hidden="true">
+          <div class="progress-bar overlay-bar"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="overlay-actions">
+      <button class="btn" id="cancelLoad" type="button">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<style>
+
+
+</style>
+  <script>
+    const MODELS_ENDPOINT = "/models";     // <-- your endpoint that returns the list
+    const PLAYER_PAGE = "/player";     // or "/player.html" if you rename it
+
+    const grid = document.getElementById("grid");
+    const statusEl = document.getElementById("status");
+    const errorEl = document.getElementById("error");
+    const searchEl = document.getElementById("search");
+    const reloadBtn = document.getElementById("reload");
+
+    let allModels = [];
+
+    function normalizeModel(m) {
+      const id = m.id;
+      const name = m.name;
+      const previewURL = m.previewURL;
+      return { id, name, previewURL, raw: m };
+    }
+
+    const overlay = document.getElementById("loadingOverlay");
+    const loadingTitle = document.getElementById("loadingTitle");
+    const loadingSub = document.getElementById("loadingSub");
+    const cancelBtn = document.getElementById("cancelLoad");
+
+    let currentAbort = null;
+
+    function setUIBusy(isBusy) {
+    for (const el of document.querySelectorAll(".model-card")) {
+        el.classList.toggle("is-disabled", isBusy);
+        el.setAttribute("aria-disabled", isBusy ? "true" : "false");
+    }
+    searchEl.disabled = isBusy;
+    reloadBtn.disabled = isBusy;
+    }
+
+    function openPlayer(modelId) { 
+        const url = new URL(PLAYER_PAGE, window.location.origin); 
+        url.searchParams.set("modelId", modelId); 
+        window.location.href = url.toString(); 
+    }
+
+    async function loadAndOpen(m) {
+        statusEl.textContent = `Loading ${m.name}…`;
+        overlay.style.display = "flex";
+
+        try {
+            const res = await fetch("/loadModel", {
+            method: "POST",
+            headers: {"Content-Type":"application/json"},
+            body: JSON.stringify({ modelId: m.id })
+            });
+
+            if (!res.ok) throw new Error(`Load failed: ${res.status}`);
+
+            openPlayer(m.id);
+        } catch (e) {
+            errorEl.textContent = e.message || String(e);
+            statusEl.textContent = "Failed to load model";
+        } finally {
+            overlay.style.display = "none";
+        }
+    }
+
+    cancelBtn.addEventListener("click", () => {
+        if (currentAbort) currentAbort.abort();
+    });
+
+
+    function render(models) {
+      grid.innerHTML = "";
+      if (!models.length) {
+        grid.innerHTML = `<div class="muted">No models found.</div>`;
+        return;
+      }
+
+      for (const m of models) {
+        const card = document.createElement("div");
+        card.className = "model-card";
+        card.tabIndex = 0;
+        card.setAttribute("role", "button");
+        card.setAttribute("aria-label", `Open model ${m.name}`);
+
+        const img = document.createElement("img");
+        img.className = "model-thumb";
+        img.alt = m.name;
+        img.loading = "lazy";
+        img.decoding = "async";
+        console.log(m)
+        img.src = m.previewURL
+
+        const body = document.createElement("div");
+        body.className = "model-body";
+
+        const title = document.createElement("p");
+        title.className = "model-title";
+        title.textContent = m.name;
+
+        const meta = document.createElement("p");
+        meta.className = "model-meta";
+        meta.textContent = m.description ? m.description : `ID: ${m.id}`;
+
+        body.appendChild(title);
+        body.appendChild(meta);
+
+        card.appendChild(img);
+        card.appendChild(body);
+
+        card.addEventListener("click", () => loadAndOpen(m));
+        card.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            loadAndOpen(m);
+        }
+        });
+
+        grid.appendChild(card);
+      }
+    }
+
+    function applyFilter() {
+      const q = (searchEl.value || "").trim().toLowerCase();
+      const filtered = !q ? allModels : allModels.filter(m =>
+        (m.name || "").toLowerCase().includes(q) ||
+        (m.id || "").toLowerCase().includes(q) ||
+        (m.description || "").toLowerCase().includes(q)
+      );
+      render(filtered);
+      statusEl.textContent = `${filtered.length} / ${allModels.length} models`;
+    }
+
+    async function loadModels() {
+      errorEl.textContent = "";
+      statusEl.textContent = "Loading models…";
+
+      try {
+        const res = await fetch(MODELS_ENDPOINT, { cache: "no-store" });
+        console.log(res)
+        if (!res.ok) throw new Error(`GET ${MODELS_ENDPOINT} failed: ${res.status}`);
+
+        const data = await res.json();
+        const list = Array.isArray(data) ? data : (data.models || data.items || []);
+        allModels = list.map(normalizeModel).filter(m => !!m.id);
+
+        applyFilter();
+      } catch (e) {
+        console.error(e);
+        statusEl.textContent = "Failed to load models";
+        errorEl.textContent = e.message || String(e);
+        grid.innerHTML = "";
+      }
+    }
+
+    searchEl.addEventListener("input", applyFilter);
+    reloadBtn.addEventListener("click", loadModels);
+
+    loadModels();
+  </script>
+</body>
+</html>
