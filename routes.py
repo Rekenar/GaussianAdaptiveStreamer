@@ -2,15 +2,19 @@ import asyncio
 
 from models import list_models
 
-from experiments import export_experiment_data, metrics_predict_logic
+from experiments import export_experiment_data, metrics_predict_logic, save_movement, HandlerResult
 
 from logger import logger
 
-from render import render_image
+from render import render_image_raw, save_render_bytes
 
 from models import get_model, ensure_started
 
 from concurrent.futures import ThreadPoolExecutor
+
+from encoding import encode_jpeg, encode_png
+
+from statics import EXPERIMENTS_DIR
 
 RENDER_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 
@@ -32,15 +36,9 @@ async def get_list_of_all_available_models(request: Request):
 
 async def render_handler(request: Request):
     await ensure_started()
-    
+
     data = await request.json()
-    
-    
-    logger.info(
-        "[Handler] render request received: %s",
-        data
-    )
-        
+
     azimuth = float(data.get("angle", 180))
     elevation = float(data.get("elevation", 0))
     x = float(data.get("x", 0))
@@ -52,32 +50,44 @@ async def render_handler(request: Request):
     cy = float(data.get("cy", 300.0))
     width = float(data.get("width", 800))
     height = float(data.get("height", 600))
-    profile = int(data.get("profile", 0))  # 0..3 -> 1x,2x,4x,8x downsample
-    fileName = data.get("fileName") or "default"
-    savePNG = bool(data.get("savePNG", False))
-    saveJPG = bool(data.get("saveJPG", False))
+    profile = int(data.get("profile", 0))
     model = get_model(data.get("modelId"))
-    
+
     loop = asyncio.get_running_loop()
-    jpeg_bytes, render_ms, jpeg_original, png_original = await loop.run_in_executor(
+
+    # 1) render raw in executor
+    img_stream, render_ms = await loop.run_in_executor(
         RENDER_EXECUTOR,
-        render_image,
-        azimuth, elevation, x, y, z, fx, fy, cx, cy, width, height, profile, savePNG, saveJPG, model
+        render_image_raw,
+        azimuth, elevation, x, y, z, fx, fy, cx, cy, width, height, profile, model
     )
 
-    if savePNG:
-        logger.info("Saving PNG")
-        #save_render_bytes(png_original, f"captures/{fileName}/png", type=".png")
+    # 2) encode OUTSIDE render_image_raw
+    factor = 1 << max(0, min(3, int(profile)))
+    stream_quality = max(50, 70 - (factor * 5))
 
-    if saveJPG:
-        logger.info("Saving JPGE")
-        #save_render_bytes(jpeg_bytes=jpeg_original, out_dir=f"captures/{fileName}/jpg", type=".jpg")
+    jpeg_bytes = await loop.run_in_executor(
+        RENDER_EXECUTOR,
+        lambda: encode_jpeg(img_stream, quality=stream_quality)
+    )
 
     return Response(
         jpeg_bytes,
         media_type="image/jpeg",
         headers={"Cache-Control": "no-store", "X-Render-Time-Ms": f"{render_ms:.2f}"},
     )
+
+    
+def to_response(result: HandlerResult):
+    headers = result.headers or {}
+
+    if result.payload is not None:
+        return JSONResponse(result.payload, status_code=result.status, headers=headers)
+
+    if result.text is not None:
+        return PlainTextResponse(result.text, status_code=result.status, headers=headers)
+
+    return Response(b"", status_code=result.status, headers=headers)
     
     
 # POST /metrics/predict
@@ -90,13 +100,20 @@ async def metrics_predict(request):
 
     result = await metrics_predict_logic(body)
     
-    if result.payload is not None:
-        return JSONResponse(result.payload, status_code=result.status, headers=result.headers)
+    return to_response(result)
 
-    if result.text is not None:
-        return PlainTextResponse(result.text, status_code=result.status, headers=result.headers)
 
-    return Response(b"", status_code=result.status, headers=result.headers)
+# POST /metrics/predict
+async def save_movements(request):
+    await ensure_started()
+    try:
+        body = await request.json()
+    except Exception as e:
+        return PlainTextResponse(f"Invalid JSON: {e}", status_code=400)
+
+    result = await save_movement(body)
+    
+    return to_response(result)
 
 
 async def export_experiment(request : Request):
@@ -144,3 +161,91 @@ async def load_model(request: Request):
         await loop.run_in_executor(None, model.load)
 
     return JSONResponse(model_to_json(model))
+
+
+async def save_images(request: Request):
+    await ensure_started()
+
+    data = await request.json()
+
+    experiment_name = data.get("experimentName")
+    
+    items = load_movements(experiment_name)
+    
+    for item in items:
+        angle = item["angle"]
+        elevation = item["elevation"] 
+        x = item["x"]
+        y = item["y"] 
+        z = item["z"] 
+        fx = item["fx"] 
+        fy = item["fy"] 
+        cx = item["cx"] 
+        cy = item["cy"] 
+        width = item["width"] 
+        height = item["height"] 
+        profile = item["profile"] 
+        modelId = item["modelId"]
+        model = get_model(modelId)
+
+        loop = asyncio.get_running_loop()
+
+        # 1) render raw in executor
+        img_stream, render_ms = await loop.run_in_executor(
+            RENDER_EXECUTOR,
+            render_image_raw,
+            angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile, model
+        )
+
+        # 2) encode OUTSIDE render_image_raw
+        factor = 1 << max(0, min(3, int(profile)))
+        stream_quality = max(50, 70 - (factor * 5))
+
+        jpeg_bytes = await loop.run_in_executor(
+            RENDER_EXECUTOR,
+            lambda: encode_jpeg(img_stream, quality=stream_quality)
+        )
+        
+        save_render_bytes(jpeg_bytes, str(modelId), base_name=experiment_name, type="jpg")
+
+        png_bytes = await loop.run_in_executor(
+            RENDER_EXECUTOR,
+            lambda: encode_png(img_stream)
+        )
+        
+        save_render_bytes(png_bytes, str(modelId), base_name=experiment_name, type= "png")
+
+    return Response(
+        headers={"Cache-Control": "no-store"},
+    )
+    
+import json
+from pathlib import Path
+from typing import Any
+
+def load_movements(path: str | Path) -> list[dict[str, Any]]:
+    """
+    Load movement items from an NDJSON file.
+
+    Each line must be a valid JSON object.
+    Returns a list of dicts with the parameters defined in the file.
+    """
+    items: list[dict[str, Any]] = []
+
+    path = Path(f"{EXPERIMENTS_DIR}/{path}/movements.ndjson")
+
+    with path.open("r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                items.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"Invalid JSON in {path} at line {line_no}"
+                ) from e
+
+    print(items)
+    return items

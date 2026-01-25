@@ -24,7 +24,7 @@
                 <option value="0" selected>0</option>
                 <option value="1">1</option>
                 <option value="2">2</option>
-                <option value="4">3</option>
+                <option value="3">3</option>
             </select>
 
             <label class="row">
@@ -99,27 +99,21 @@
                 </div>
             </div>
 
-                    <div>
-            <label for="fileName">Filename for experiment data</label>
-            <input id="fileName" type="text" />
-            </div>
-            <div>
-                <label for="networkName">Network to check</label>
-                <input id="networkName" type="text" />
-            </div>
-            <div>
-                <label for="savePNG">Save PNGs(Test)</label>
-                <input type="checkbox" id="savePNG" />
-            </div>
-            <div>
-                <label for="saveJPG">Save JPGs(Test)</label>
-                <input type="checkbox" id="saveJPG" />
-            </div>
-            <button class="btn btn-primary" id="download-export">Download ZIP</button>
-
+        <div>
             <button class="apply-button" onclick="applyConfig()">Apply</button>
         </div>
 
+        <h3 class="section">Save Images</h3>
+        <div class="card">
+        <label for="exp-name" class="muted" style="display:block; margin-bottom:6px;">Experiment name</label>
+        <input id="exp-name" type="text" placeholder="e.g. lte_run_01" />
+
+        <div class="btn-row" style="margin-top:10px;">
+            <button id="save-images" class="btn btn-primary">Save Images</button>
+        </div>
+
+        <div id="save-images-status" class="muted" style="margin-top:8px;"></div>
+        </div>
     </aside>
 
     <!-- Main -->
@@ -149,6 +143,68 @@
             </div>
         </section>
     </main>
+
+    <!-- Experiment Overlay -->
+<div id="exp-overlay" class="exp-overlay hidden" role="dialog" aria-modal="true" aria-label="Experiment setup">
+  <div class="exp-modal">
+    <div class="exp-header">
+      <h2>Experiment Setup</h2>
+      <button id="exp-close" class="exp-x" aria-label="Close">✕</button>
+    </div>
+
+    <div class="exp-body">
+      <div class="exp-grid">
+        <label>
+          <span>File name (experiment folder)</span>
+          <input id="exp-fileName" type="text" placeholder="e.g. lte_run_01" />
+        </label>
+
+        <label>
+          <span>Network name (for tc_status)</span>
+          <input id="exp-networkName" type="text" placeholder="e.g. LTE_2min" />
+        </label>
+
+        <label>
+          <span>Playback JSON</span>
+          <input type="file" id="exp-playbackFile" accept=".json" />
+        </label>
+
+        <label>
+          <span>Runs per ABR</span>
+          <input id="exp-runsPerAbr" type="number" min="1" step="1" value="1" />
+        </label>
+
+        <label class="exp-row">
+          <span>Disable manual input during run</span>
+          <input id="exp-lockUI" type="checkbox" checked />
+        </label>
+
+        <label class="exp-row">
+          <span>Auto export ZIP when finished</span>
+          <input id="exp-autoExport" type="checkbox" />
+        </label>
+      </div>
+
+      <div class="exp-status">
+        <div><strong>Status:</strong> <span id="exp-statusText">Idle</span></div>
+        <div class="exp-progress">
+          <div class="exp-bar" id="exp-bar" style="width:0%"></div>
+        </div>
+        <div class="exp-small" id="exp-detailText"></div>
+      </div>
+    </div>
+
+    <div class="exp-footer">
+      <button id="exp-start" class="btn btn-primary">Start experiment</button>
+      <button id="exp-cancel" class="btn" disabled>Cancel</button>
+    </div>
+  </div>
+</div>
+
+<button id="open-exp" class="btn btn-primary" style="position:fixed; right:16px; bottom:16px; z-index:20;">
+  Run Experiment
+</button>
+
     <script>
         // --- Minimal recorder state ---
         const REC = {
@@ -232,11 +288,7 @@
         let height = 600;
         let rotStep = 1;
         let posStep = 0.1;
-        let fileName = "";
         let profileChoosen = 0;
-        let savePNG = false;
-        let saveJPG = false;
-        let renderMs = 0;
 
         let abrEnabledActive = abrToggle.checked;
 
@@ -308,11 +360,7 @@
             cy = parseFloat(document.getElementById('cy').value);
             rotStep = parseFloat(document.getElementById('rot-step').value);
             posStep = parseFloat(document.getElementById('pos-step').value);
-            fileName = document.getElementById('fileName')?.value;
-            networkName = document.getElementById('networkName')?.value;
             profileChoosen = document.getElementById('profile')?.value;
-            savePNG = document.getElementById("savePNG")?.checked;
-            saveJPG = document.getElementById("saveJPG")?.checked;
 
 
             // Commit ABR state from the checkbox
@@ -322,12 +370,6 @@
             cx = width / 2; cy = height / 2;
             document.getElementById('cx').value = cx;
             document.getElementById('cy').value = cy;
-
-            sendPosition().then(result => {
-                console.log("Image rendered", result);
-            }).catch(err => {
-                console.error("Failed", err);
-            });
         }
 
         function toggleSidebar() {
@@ -353,7 +395,7 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        modelId, angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile, fileName, savePNG, saveJPG
+                        modelId, angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile
                     }),
                 })
                     .then(async (response) => {
@@ -455,25 +497,6 @@
         const fileInput = document.getElementById('rec-file');
         const startBtn = document.getElementById('start-playback');
 
-        async function reportPred(networkName, fileName, pred_bps, profile, renderMS) {
-            try {
-                await fetch("/metrics/predict", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    cache: "no-store",
-                    body: JSON.stringify({
-                        networkName,
-                        fileName,
-                        pred_bps,
-                        profile,
-                        renderMs
-                    })
-                });
-            } catch (e) {
-                console.warn("[predict] post failed", e);
-            }
-        }
-
         startBtn.addEventListener('click', async () => {
             const file = fileInput?.files?.[0];
             if (!file) { alert('Select a JSON file first.'); return; }
@@ -501,7 +524,7 @@
 
                     console.log(predictedBps, profileIdx)
 
-                    await reportPred(networkName, fileName, predictedBps, profileIdx, renderMs);
+                    await reportPred(fileName, predictedBps, profileIdx, renderMs);
                 }
 
             } catch (err) {
@@ -512,25 +535,271 @@
             }
         });
     </script>
-    <script>
-        const dlBtn = document.getElementById('download-export');
-        if (dlBtn) {
-            dlBtn.addEventListener('click', () => {
-            const fn = (document.getElementById('fileName')?.value || '').trim();
-            if (!fn) return;
 
-            const url = `/export?fileName=${encodeURIComponent(fn)}`;
+<script>
+    // ---------------- Experiment Runner ----------------
+    const overlay = document.getElementById('exp-overlay');
+    const openExpBtn = document.getElementById('open-exp');
+    const closeExpBtn = document.getElementById('exp-close');
 
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `${fn}.zip`;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            });
+    const expStartBtn = document.getElementById('exp-start');
+    const expCancelBtn = document.getElementById('exp-cancel');
+
+    const expStatusText = document.getElementById('exp-statusText');
+    const expDetailText = document.getElementById('exp-detailText');
+    const expBar = document.getElementById('exp-bar');
+
+    const expFileName = document.getElementById('exp-fileName');
+    const expNetworkName = document.getElementById('exp-networkName');
+    const expPlaybackFile = document.getElementById('exp-playbackFile');
+    const expRunsPerAbr = document.getElementById('exp-runsPerAbr');
+    const expLockUI = document.getElementById('exp-lockUI');
+    const expAutoExport = document.getElementById('exp-autoExport');
+
+    let EXP_CANCEL = false;
+    let EXP_RUNNING = false;
+
+    function showOverlay() { 
+        overlay.classList.remove('hidden'); 
+    }
+    function hideOverlay() { 
+        if (!EXP_RUNNING) overlay.classList.add('hidden'); 
+    }
+
+    openExpBtn?.addEventListener('click', showOverlay);
+    closeExpBtn?.addEventListener('click', hideOverlay);
+
+    function setExpUI({running, status, detail, progress01}) {
+        if (status != null) expStatusText.textContent = status;
+        if (detail != null) expDetailText.textContent = detail;
+        if (progress01 != null) expBar.style.width = `${Math.max(0, Math.min(1, progress01)) * 100}%`;
+
+        EXP_RUNNING = !!running;
+        expStartBtn.disabled = EXP_RUNNING;
+        expCancelBtn.disabled = !EXP_RUNNING;
+        closeExpBtn.disabled = EXP_RUNNING;
+    }
+
+
+
+    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    async function loadPlaybackEventsFromFile(file) {
+        const text = await file.text();
+        let events = JSON.parse(text);
+        events = Array.isArray(events) ? events : (events.events || []);
+        if (!events.length) throw new Error('No events in file');
+        return events;
+    }
+
+    function setAbrKind(kind) {
+        abrAlgoSelect.value = kind;
+        abr = ABRFactory.create(kind, resolutionSelect);
+    }
+
+    async function runOnePlayback(events) {
+        for (const ev of events) {
+            if (EXP_CANCEL) throw new Error('CANCELLED');
+
+            if (ev.angle != null) angle = Number(ev.angle);
+            if (ev.elevation != null) elevation = Number(ev.elevation);
+            if (ev.x != null) x = Number(ev.x);
+            if (ev.y != null) y = Number(ev.y);
+            if (ev.z != null) z = Number(ev.z);
+
+            positionDisplay.textContent =
+                `Angle: ${angle.toFixed(0)}°, Elevation: ${elevation.toFixed(0)}°, X: ${x.toFixed(1)}, Y: ${y.toFixed(1)}, Z: ${z.toFixed(1)}`;
+
+            await sendPosition();
+
+            const predictedBps = abr.lastThroughputBps;
+            const profileIdx = abr.profile;
+            const networkName = expNetworkName.value;
+
+            await reportPred(networkName, fileName, predictedBps, profileIdx, renderMs);
+            await saveMovement(fileName, modelId, angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profileIdx)
         }
-    </script>
+    }
 
+    async function reportPred(networkName, fileName, pred_bps, profile, renderMs) {
+        try {
+        await fetch("/metrics/predict", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            cache: "no-store",
+            body: JSON.stringify({
+            networkName,
+            fileName,
+            pred_bps,
+            profile,
+            renderMs: renderMs
+            })
+        });
+        } catch (e) {
+            console.warn("[predict] post failed", e);
+        }
+    }
+    async function saveMovement(filename, modelId, angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profile) {
+        try {
+        await fetch("/movement", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            cache: "no-store",
+            body: JSON.stringify({
+                fileName,
+                modelId,
+                angle,
+                elevation,
+                x,
+                y,
+                z,
+                fx,
+                fy,
+                cx,
+                cy,
+                width,
+                height,
+                profile
+            })
+        });
+        } catch (e) {
+            console.warn("[predict] post failed", e);
+        }
+    }
+
+    async function runExperimentSequentialABRs({events, runsPerAbr, lockUI, autoExport}) {
+        const abrOrder = ['simple', 'l2a', 'lol+'];
+
+        const totalRuns = abrOrder.length * runsPerAbr;
+        let doneRuns = 0;
+
+        setExpUI({running:true, status:"Running", detail:"Preparing…", progress01:0});
+        EXP_CANCEL = false;
+
+        abrToggle.checked = true;
+
+        for (const abrKind of abrOrder) {
+        for (let r = 1; r <= runsPerAbr; r++) {
+            if (EXP_CANCEL) throw new Error('CANCELLED');
+
+            fileName = `${expFileName.value}__${abrKind}__run${r}`;
+
+            setAbrKind(abrKind);
+
+            // Optional: reset ABR internal state between runs, if your ABR classes support it
+            // (safer for reproducibility)
+            if (typeof abr.reset === 'function') abr.reset();
+
+            setExpUI({
+            running:true,
+            status:"Running",
+            detail:`ABR=${abrKind} (run ${r}/${runsPerAbr}) → folder: ${fileName}`,
+            progress01: doneRuns / totalRuns
+            });
+
+            await runOnePlayback(events);
+
+            doneRuns++;
+            setExpUI({running:true, progress01: doneRuns / totalRuns});
+
+            await sleep(150);
+        }
+        }
+
+        setExpUI({running:false, status:"Finished", detail:"All ABRs completed.", progress01:1});
+
+
+        if (autoExport) {
+            const base = document.getElementById('exp-fileName')?.value?.trim();
+            if (base) window.open(`/export?fileName=${encodeURIComponent(base)}`, '_blank');
+        }
+    }
+
+    expCancelBtn.addEventListener('click', () => {
+        EXP_CANCEL = true;
+        setExpUI({running:true, status:"Stopping…", detail:"Cancelling after current request…"});
+    });
+
+    expStartBtn.addEventListener('click', async () => {
+        try {
+        // Gather values from overlay and apply to your active variables.
+        const baseName = (expFileName.value || '').trim();
+        if (!baseName) { alert("Please enter a file name."); return; }
+
+        const net = (expNetworkName.value || '').trim();
+        if (!net) { alert("Please enter a network name."); return; }
+
+        const pbFile = expPlaybackFile.files?.[0];
+        if (!pbFile) { alert("Please select a playback JSON."); return; }
+
+        const runsPerAbr = Math.max(1, parseInt(expRunsPerAbr.value || '1', 10));
+
+        const events = await loadPlaybackEventsFromFile(pbFile);
+
+        await runExperimentSequentialABRs({
+            events,
+            runsPerAbr,
+            lockUI: !!expLockUI.checked,
+            autoExport: !!expAutoExport.checked
+        });
+
+        } catch (err) {
+        if (String(err?.message || err).includes('CANCELLED')) {
+            setExpUI({running:false, status:"Cancelled", detail:"Experiment cancelled.", progress01:0});
+        } else {
+            console.error(err);
+            setExpUI({running:false, status:"Error", detail:String(err?.message || err), progress01:0});
+            alert('Experiment failed: ' + (err?.message || err));
+        } 
+        }
+    });
+
+    // Initial state
+    setExpUI({running:false, status:"Idle", detail:"Configure settings and press Start.", progress01:0});
+</script>
+
+<script>
+  const saveImagesBtn = document.getElementById('save-images');
+  const expNameInput = document.getElementById('exp-name');
+  const saveImagesStatus = document.getElementById('save-images-status');
+
+  saveImagesBtn?.addEventListener('click', async () => {
+    const experimentName = (expNameInput?.value || '').trim();
+    if (!experimentName) {
+      alert('Please enter an experiment name.');
+      expNameInput?.focus();
+      return;
+    }
+
+    saveImagesBtn.disabled = true;
+    if (saveImagesStatus) saveImagesStatus.textContent = 'Sending request…';
+
+    try {
+      const res = await fetch('/saveImages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({ experimentName })
+      });
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(txt || `HTTP ${res.status}`);
+      }
+
+      // If backend returns JSON, you can read it; if not, ignore.
+      // const data = await res.json().catch(() => null);
+
+      if (saveImagesStatus) saveImagesStatus.textContent = `✅ Saved images for "${experimentName}"`;
+    } catch (e) {
+      console.error('[saveImages] failed', e);
+      if (saveImagesStatus) saveImagesStatus.textContent = `❌ Failed: ${e.message || e}`;
+      alert('Save Images failed: ' + (e.message || e));
+    } finally {
+      saveImagesBtn.disabled = false;
+    }
+  });
+</script>
 
 </body>
 

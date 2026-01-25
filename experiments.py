@@ -131,3 +131,49 @@ async def metrics_predict_logic(body: Dict[str, Any]) -> HandlerResult:
         status=200,
         payload={"ok": True, "file": parsed["file_name"]},
     )
+
+async def save_movement(body: Dict[str, Any]) -> HandlerResult:
+    fileName = body.get("fileName")
+    modelId = body.get("modelId")
+    angle = body.get("angle")
+    elevation = body.get("elevation")
+    x = body.get("x")
+    y = body.get("y")
+    z = body.get("z")
+    fx = body.get("fx")
+    fy = body.get("fy")
+    cx = body.get("cx")
+    cy = body.get("cy")
+    width = body.get("width")
+    height = body.get("height")
+    profile = body.get("profile")
+
+
+    movement = {
+        "modelId": modelId,
+        "angle": angle,
+        "elevation": elevation,
+        "x": x,
+        "y": y,
+        "z": z,
+        "fx": fx,
+        "fy": fy,
+        "cx": cx,
+        "cy": cy,
+        "width":width,
+        "height": height,
+        "profile": profile   
+    }
+    
+    print(movement)
+
+    out_path = os.path.join(EXPERIMENTS_DIR, fileName)
+    os.makedirs(out_path, exist_ok=True)
+
+    with open(os.path.join(out_path, "movements.ndjson"), "a", buffering=1) as f:
+        f.write(json.dumps(movement) + "\n")
+
+    return HandlerResult(
+        status=200,
+        payload={"ok": True, "file": movement},
+    )

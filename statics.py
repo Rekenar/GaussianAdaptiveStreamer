@@ -22,5 +22,5 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 
 PREVIEW_CANDIDATES = ("preview.png", "preview.jpg")
 
-EVICT_AFTER_MS = 60_000
+EVICT_AFTER_MS = 10 * 60_000
 EVICT_CHECK_EVERY_S = 20

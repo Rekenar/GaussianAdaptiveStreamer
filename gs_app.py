@@ -31,6 +31,8 @@ starlette = Starlette(
         Route("/models-ui", routes.models_page, methods=["GET"]),
         Route("/player", routes.player_page, methods=["GET"]),
         Route("/loadModel", routes.load_model, methods=["POST"]),
+        Route("/movement", routes.save_movements, methods=["POST"]),
+        Route("/saveImages", routes.save_images, methods=["POST"]),
         Mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     ]
 )
