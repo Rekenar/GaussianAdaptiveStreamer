@@ -1,4 +1,3 @@
-from turbojpeg import TurboJPEG, TJPF_RGB
 from PIL import Image
 import io
 import numpy as np
