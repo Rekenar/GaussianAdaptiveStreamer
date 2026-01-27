@@ -11,9 +11,7 @@ class L2A_ABR {
 
     this.K = this.maxProfile - this.minProfile + 1;
     this.logW = Array(this.K).fill(0.0);
-    
-    // REDUCED: Lower gamma and eta reduce "random" exploration and 
-    // make the weights less reactive to single-frame jitter.
+
     this.gamma = 0.01; 
     this.eta = 0.01;   
 
@@ -26,12 +24,12 @@ class L2A_ABR {
     this.latencyTargetMs = 140; 
     this.minNetBudgetMs = 20;  
 
-    this.aOvershoot = 2.0; // Increased: prioritize punishing actual budget misses
-    this.bLatency = 0.4;   // Decreased: general latency is less important than overshoot
+    this.aOvershoot = 2.0;
+    this.bLatency = 0.4; 
     this.sSwitch = 1;
     this.qQuality = 0.55;
 
-    this.cooldownMs = 1500; // Increased: force the algorithm to stay on a choice longer
+    this.cooldownMs = 1500;
     this.lastChangeAt = 0;
 
     this.clicks = 0;
@@ -166,7 +164,6 @@ class L2A_ABR {
     const switchPenalty = (usedProfile !== this.prevProfile) ? 1 : 0;
     const qual = 1 - this._qualityReward(usedProfile);
 
-    // No longer dividing by a global norm; letting the hyper-parameters control weight
     let L = (this.aOvershoot * overC) + (this.bLatency * latC) + (this.sSwitch * switchPenalty) + (this.qQuality * qual);
     
     this.prevProfile = usedProfile;
@@ -180,17 +177,14 @@ _fitLogThr() {
   const z = arr.map(x => Math.log(Math.max(x, 1e-6)));
   const n = z.length;
   const mu = z.reduce((a, b) => a + b, 0) / n;
-  
-  // High variance (sigma) is what causes switching. 
-  // We clamp it so the "Risk" calculation doesn't go wild.
+
   const rawVar = z.reduce((a, b) => a + (b - mu) * (b - mu), 0) / Math.max(1, n - 1);
   const sigma = Math.sqrt(Math.max(rawVar, 0.1));
   
-  return { mu, sigma: Math.min(sigma, 0.4) }; // Clamp sigma to prevent over-reaction
+  return { mu, sigma: Math.min(sigma, 0.4) };
 }
 
   _riskAndExpect(bytes, mu, sigma, medServer, netBudget) {
-    // We use a conservative threshold (0.25 percentile) for the expectation
     const thr_q = Math.exp(mu - 0.67 * sigma); 
     const expectedNetMs = bytes / Math.max(thr_q, 1e-6);
     const expectTotal = expectedNetMs + medServer;
@@ -206,10 +200,9 @@ _fitLogThr() {
   }
 
 _probsFromLogWeights() {
-    const temperature = 0.2; // Lower = more aggressive favoring of the best arm
+    const temperature = 0.2;
     const maxL = Math.max(...this.logW);
     
-    // Divide by temperature to spread the values before Exp
     const w = this.logW.map(L => Math.exp((L - maxL) / temperature));
     
     const sumW = w.reduce((a, b) => a + b, 0) || 1;
