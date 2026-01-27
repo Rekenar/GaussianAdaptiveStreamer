@@ -8,7 +8,7 @@ python http3_server.py --certificate certificates/ssl_cert.pem --private-key cer
   --enable-experimental-web-platform-features \
   --ignore-certificate-errors-spki-list=BSQJ0jkQ7wwhR7KvPZ+DSNk2XTZ/MS6xCbo9qu++VdQ= \
   --origin-to-force-quic-on=localhost:4433 \
-  https://localhost:4433/
+  https://localhost:4433/models-ui
 '''
 
 

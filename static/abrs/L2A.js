@@ -11,8 +11,11 @@ class L2A_ABR {
 
     this.K = this.maxProfile - this.minProfile + 1;
     this.logW = Array(this.K).fill(0.0);
-    this.gamma = 0.05;
-    this.eta = 0.05; 
+    
+    // REDUCED: Lower gamma and eta reduce "random" exploration and 
+    // make the weights less reactive to single-frame jitter.
+    this.gamma = 0.01; 
+    this.eta = 0.01;   
 
     this.windowSize = 30;
     this.latTotal = [];  
@@ -23,18 +26,17 @@ class L2A_ABR {
     this.latencyTargetMs = 140; 
     this.minNetBudgetMs = 20;  
 
-    this.aOvershoot = 1.5;
-    this.bLatency = 0.65;
-    this.sSwitch = 0.35;
+    this.aOvershoot = 2.0; // Increased: prioritize punishing actual budget misses
+    this.bLatency = 0.4;   // Decreased: general latency is less important than overshoot
+    this.sSwitch = 1;
     this.qQuality = 0.55;
 
-    this.cooldownMs = 800;
+    this.cooldownMs = 1500; // Increased: force the algorithm to stay on a choice longer
     this.lastChangeAt = 0;
 
     this.clicks = 0;
-    this.gammaMin = 0.02;
-    this.gammaDecay = 0.99; 
-
+    this.gammaMin = 0.005;
+    this.gammaDecay = 0.98; 
 
     this.lastBytes = 12000;  
     this.lastProfile = this.profile;
@@ -46,11 +48,7 @@ class L2A_ABR {
 
     this._lastProbs = Array(this.K).fill(1 / this.K);
     this._lastPChosen = 1.0;
-
-
-
     this.lastThroughputBps = 0;
-
   }
 
   setResolution(w, h) {
@@ -73,10 +71,9 @@ class L2A_ABR {
     let probs = this._probsFromLogWeights();
     this._lastProbs = probs.slice();
 
-   
     const safety = [];
-    const riskCap = 0.75;     
-    const headroom = 1.15;    
+    const riskCap = 0.70; // Slightly more conservative
+    const headroom = 1.10;    
     for (let p = this.minProfile; p <= this.maxProfile; p++) {
       const bytes = this._bytesFor(p, K, pixels);
       const { expectTotal, risk } = this._riskAndExpect(bytes, mu, sigma, medServer, netBudget);
@@ -110,22 +107,6 @@ class L2A_ABR {
       this.lastChangeAt = now;
     }
 
-    if (candidate > this.profile && this.latNet.length >= 2) {
-      const L = this.latNet;
-      const medServer = this._median(this.latServer) || this._serverDefault();
-      const netBudget = Math.max(this.minNetBudgetMs, this.latencyTargetMs - medServer);
-      const bad2 = L[L.length - 1] > 0.9 * netBudget && L[L.length - 2] > 0.9 * netBudget;
-      if (!bad2) { 
-
-        const probs = this._lastProbs.slice();
-        for (let p = this.profile + 1; p <= this.maxProfile; p++) probs[this.profileIndex(p)] = 0;
-        const ren = this._renorm(probs);
-        const c2 = this._pickByProbs(ren);
-        if (c2 <= this.profile) candidate = c2;
-      }
-    }
-
-
     this.clicks++;
     if (this.clicks % 12 === 0) {
       this.gamma = Math.max(this.gammaMin, this.gamma * this.gammaDecay);
@@ -157,7 +138,6 @@ class L2A_ABR {
 
     if (contentLengthBytes > 0 && netMs > 0) {
       this.lastThroughputBps = (contentLengthBytes / 1000) / (netMs / 1000);
-      console.log(`[ABR] throughput = ${this.lastThroughputBps.toFixed(1)} Kb/s`);
     }
 
     const medServer = this._median(this.latServer) || this._serverDefault();
@@ -175,34 +155,78 @@ class L2A_ABR {
     for (let i = 0; i < this.K; i++) this.logW[i] -= maxLogW;
 
     if (this.debug) {
-      const thrMed = this.thrBytesPerMsNet.length ? this._median(this.thrBytesPerMsNet) : 0;
-      console.log(
-        `[L2A] net=${netMs.toFixed(1)}ms tot=${dtTotal.toFixed(1)}ms `
-        + (hasServer ? `srv=${renderMs.toFixed(1)}ms ` : ``)
-        + `netBudget=${netBudget.toFixed(1)}ms `
-        + `loss=${lossChosen.toFixed(3)} p=${pChosen.toFixed(3)} `
-        + `thrMed=${thrMed.toFixed(3)}B/ms prof=${usedProfile}`
-      );
+        console.log(`[L2A] net=${netMs.toFixed(1)}ms loss=${lossChosen.toFixed(3)} p=${pChosen.toFixed(3)} prof=${usedProfile}`);
     }
   }
 
   _lossFromNetObservation(netMs, usedProfile, netBudgetMs) {
     const t = Math.max(1, netBudgetMs);
-    const over = Math.max(0, netMs - t) / t;
-    const lat = netMs / t;
+    const overC = Math.max(0, netMs - t) / t; 
+    const latC = netMs / this.latencyTargetMs; 
     const switchPenalty = (usedProfile !== this.prevProfile) ? 1 : 0;
     const qual = 1 - this._qualityReward(usedProfile);
 
-    const overC = Math.min(1, over);
-    const latC = Math.min(1, lat);
-
-    let L = this.aOvershoot * overC + this.bLatency * latC + this.sSwitch * switchPenalty + this.qQuality * qual;
-    const norm = (this.aOvershoot + this.bLatency + this.sSwitch + this.qQuality) || 1;
-    L = Math.min(1, Math.max(0, L / norm));
-
+    // No longer dividing by a global norm; letting the hyper-parameters control weight
+    let L = (this.aOvershoot * overC) + (this.bLatency * latC) + (this.sSwitch * switchPenalty) + (this.qQuality * qual);
+    
     this.prevProfile = usedProfile;
     return L;
   }
+
+_fitLogThr() {
+  const arr = this.thrBytesPerMsNet;
+  if (arr.length < 10) return { mu: Math.log(100), sigma: 0.5 }; 
+  
+  const z = arr.map(x => Math.log(Math.max(x, 1e-6)));
+  const n = z.length;
+  const mu = z.reduce((a, b) => a + b, 0) / n;
+  
+  // High variance (sigma) is what causes switching. 
+  // We clamp it so the "Risk" calculation doesn't go wild.
+  const rawVar = z.reduce((a, b) => a + (b - mu) * (b - mu), 0) / Math.max(1, n - 1);
+  const sigma = Math.sqrt(Math.max(rawVar, 0.1));
+  
+  return { mu, sigma: Math.min(sigma, 0.4) }; // Clamp sigma to prevent over-reaction
+}
+
+  _riskAndExpect(bytes, mu, sigma, medServer, netBudget) {
+    // We use a conservative threshold (0.25 percentile) for the expectation
+    const thr_q = Math.exp(mu - 0.67 * sigma); 
+    const expectedNetMs = bytes / Math.max(thr_q, 1e-6);
+    const expectTotal = expectedNetMs + medServer;
+
+    let risk = 1.0;
+    const needNet = Math.max(1, this.latencyTargetMs - medServer);
+    if (sigma > 1e-6) {
+      const y = Math.log(bytes / needNet);
+      const t = (y - mu) / sigma;
+      risk = this._stdNormCdf(t);
+    }
+    return { expectTotal, risk: this._clamp(risk, 0, 1) };
+  }
+
+_probsFromLogWeights() {
+    const temperature = 0.2; // Lower = more aggressive favoring of the best arm
+    const maxL = Math.max(...this.logW);
+    
+    // Divide by temperature to spread the values before Exp
+    const w = this.logW.map(L => Math.exp((L - maxL) / temperature));
+    
+    const sumW = w.reduce((a, b) => a + b, 0) || 1;
+    const base = w.map(x => x / sumW);
+
+    const eps = this.gamma / this.K;
+    const mixed = base.map(p => (1 - this.gamma) * p + eps);
+    return this._renorm(mixed);
+}
+
+  _percentile(arr, p) {
+    if (!arr.length) return 0;
+    const sorted = arr.slice().sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length * p)];
+  }
+
+  _median(arr) { return this._percentile(arr, 0.5); }
 
   _bytesFor(p, K, pixels) {
     return Math.max(1024, Math.round(K * pixels / Math.pow(2, p)));
@@ -219,54 +243,12 @@ class L2A_ABR {
     return base + 20 * Math.min(2.0, px / refPx);
   }
 
-  _fitLogThr() {
-    const arr = this.thrBytesPerMsNet;
-    if (!arr.length) return { mu: Math.log(100), sigma: 0.7 }; 
-    const z = arr.map(x => Math.log(Math.max(x, 1e-6)));
-    const n = z.length;
-    const mu = z.reduce((a, b) => a + b, 0) / n;
-    const var_ = z.reduce((a, b) => a + (b - mu) * (b - mu), 0) / Math.max(1, n - 1);
-    return { mu, sigma: Math.sqrt(Math.max(var_, 1e-6)) };
-  }
-
-  _riskAndExpect(bytes, mu, sigma, medServer, netBudget) {
-    const c = 0.75;
-    const thr_q = Math.exp(mu - c * sigma); 
-    const expectedNetMs = bytes / Math.max(thr_q, 1e-6);
-    const expectTotal = expectedNetMs + medServer;
-
-    let risk = 1.0;
-    const needNet = Math.max(1, this.latencyTargetMs - medServer);
-    if (sigma > 1e-6) {
-      const y = Math.log(bytes / needNet);
-      const t = (y - mu) / sigma;
-      risk = this._stdNormCdf(t);
-    } else {
-      risk = (Math.exp(mu) < (bytes / needNet)) ? 1.0 : 0.0;
-    }
-    return { expectTotal, risk: this._clamp(risk, 0, 1) };
-  }
-
   _riskForP(p, K, pixels, mu, sigma, medServer, netBudget) {
     const bytes = this._bytesFor(p, K, pixels);
     return this._riskAndExpect(bytes, mu, sigma, medServer, netBudget).risk;
   }
 
-  _qualityReward(p) {
-    return 1 / (1 + 0.6 * p);
-  }
-
-
-  _probsFromLogWeights() {
-    const maxL = Math.max(...this.logW);
-    const w = this.logW.map(L => Math.exp(L - maxL));
-    const sumW = w.reduce((a, b) => a + b, 0) || 1;
-    const base = w.map(x => x / sumW);
-
-    const eps = this.gamma / this.K;
-    const mixed = base.map(p => (1 - this.gamma) * p + eps);
-    return this._renorm(mixed);
-  }
+  _qualityReward(p) { return 1 / (1 + 0.6 * p); }
 
   _pickByProbs(probs) {
     const r = Math.random(); let c = 0;
@@ -280,16 +262,7 @@ class L2A_ABR {
   }
 
   profileIndex(p) { return p - this.minProfile; }
-
   _push(a, v) { a.push(v); if (a.length > this.windowSize) a.shift(); }
-
-  _median(arr) {
-    if (!arr.length) return 0;
-    const a = arr.slice().sort((x, y) => x - y);
-    const m = a.length >> 1;
-    return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
-  }
-
   _clamp(x, lo, hi) { return Math.min(Math.max(x, lo), hi); }
 
   _stdNormCdf(t) {
