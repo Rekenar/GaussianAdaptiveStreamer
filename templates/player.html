@@ -672,38 +672,6 @@
     </script>
 
 <script>
-    // ---------------- Experiment Runner ----------------
-    const overlay = document.getElementById('exp-overlay');
-    const openExpBtn = document.getElementById('open-exp');
-    const closeExpBtn = document.getElementById('exp-close');
-
-    const expStartBtn = document.getElementById('exp-start');
-    const expCancelBtn = document.getElementById('exp-cancel');
-
-    const expStatusText = document.getElementById('exp-statusText');
-    const expDetailText = document.getElementById('exp-detailText');
-    const expBar = document.getElementById('exp-bar');
-
-    const expFileName = document.getElementById('exp-fileName');
-    const expNetworkName = document.getElementById('exp-networkName');
-    const expPlaybackFile = document.getElementById('exp-playbackFile');
-    const expRunsPerAbr = document.getElementById('exp-runsPerAbr');
-    const expLockUI = document.getElementById('exp-lockUI');
-    const expAutoExport = document.getElementById('exp-autoExport');
-
-    let EXP_CANCEL = false;
-    let EXP_RUNNING = false;
-
-    function showOverlay() { 
-        overlay.classList.remove('hidden'); 
-    }
-    function hideOverlay() { 
-        if (!EXP_RUNNING) overlay.classList.add('hidden'); 
-    }
-
-    openExpBtn?.addEventListener('click', showOverlay);
-    closeExpBtn?.addEventListener('click', hideOverlay);
-
     function setExpUI({running, status, detail, progress01}) {
         if (status != null) expStatusText.textContent = status;
         if (detail != null) expDetailText.textContent = detail;
@@ -715,45 +683,12 @@
         closeExpBtn.disabled = EXP_RUNNING;
     }
 
-
-
-    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
     async function loadPlaybackEventsFromFile(file) {
         const text = await file.text();
         let events = JSON.parse(text);
         events = Array.isArray(events) ? events : (events.events || []);
         if (!events.length) throw new Error('No events in file');
         return events;
-    }
-
-    function setAbrKind(kind) {
-        abrAlgoSelect.value = kind;
-        abr = ABRFactory.create(kind, resolutionSelect);
-    }
-
-    async function runOnePlayback(events) {
-        for (const ev of events) {
-            if (EXP_CANCEL) throw new Error('CANCELLED');
-
-            if (ev.angle != null) angle = Number(ev.angle);
-            if (ev.elevation != null) elevation = Number(ev.elevation);
-            if (ev.x != null) x = Number(ev.x);
-            if (ev.y != null) y = Number(ev.y);
-            if (ev.z != null) z = Number(ev.z);
-
-            positionDisplay.textContent =
-                `Angle: ${angle.toFixed(0)}°, Elevation: ${elevation.toFixed(0)}°, X: ${x.toFixed(1)}, Y: ${y.toFixed(1)}, Z: ${z.toFixed(1)}`;
-
-            await sendPosition();
-
-            const predictedBps = abr.lastThroughputBps;
-            const profileIdx = abr.profile;
-            const networkName = expNetworkName.value;
-
-            await reportPred(networkName, fileName, predictedBps, profileIdx, renderMs);
-            await saveMovement(fileName, modelId, angle, elevation, x, y, z, fx, fy, cx, cy, width, height, profileIdx)
-        }
     }
 
     async function reportPred(networkName, fileName, pred_bps, profile, renderMs) {
@@ -802,92 +737,45 @@
         }
     }
 
-    async function runExperimentSequentialABRs({events, runsPerAbr, lockUI, autoExport}) {
-        const abrOrder = ['simple', 'l2a', 'lol+'];
+        let runner = null;
 
-        const totalRuns = abrOrder.length * runsPerAbr;
-        let doneRuns = 0;
+        expStartBtn.addEventListener("click", async () => {
 
-        setExpUI({running:true, status:"Running", detail:"Preparing…", progress01:0});
-        EXP_CANCEL = false;
+            const baseName = expFileName.value.trim();
+            const networkName = expNetworkName.value.trim();
+            const pbFile = expPlaybackFile.files[0];
 
-        abrToggle.checked = true;
+            if (!baseName || !pbFile) {
+                alert("Missing experiment config");
+                return;
+            }
 
-        for (const abrKind of abrOrder) {
-        for (let r = 1; r <= runsPerAbr; r++) {
-            if (EXP_CANCEL) throw new Error('CANCELLED');
+            const runsPerAbr = Math.max(1, Number(expRunsPerAbr.value));
+            const events = await loadPlaybackEventsFromFile(pbFile);
 
-            fileName = `${expFileName.value}__${abrKind}__run${r}`;
+            runner = new ExperimentRunner(
+                baseName,
+                networkName,
+                events,
+                runsPerAbr,
+                expAutoExport.checked
+            );
 
-            setAbrKind(abrKind);
-
-            // Optional: reset ABR internal state between runs, if your ABR classes support it
-            // (safer for reproducibility)
-            if (typeof abr.reset === 'function') abr.reset();
-
-            setExpUI({
-            running:true,
-            status:"Running",
-            detail:`ABR=${abrKind} (run ${r}/${runsPerAbr}) → folder: ${fileName}`,
-            progress01: doneRuns / totalRuns
-            });
-
-            await runOnePlayback(events);
-
-            doneRuns++;
-            setExpUI({running:true, progress01: doneRuns / totalRuns});
-
-            await sleep(150);
-        }
-        }
-
-        setExpUI({running:false, status:"Finished", detail:"All ABRs completed.", progress01:1});
-
-
-        if (autoExport) {
-            const base = document.getElementById('exp-fileName')?.value?.trim();
-            if (base) window.open(`/export?fileName=${encodeURIComponent(base)}`, '_blank');
-        }
-    }
-
-    expCancelBtn.addEventListener('click', () => {
-        EXP_CANCEL = true;
-        setExpUI({running:true, status:"Stopping…", detail:"Cancelling after current request…"});
-    });
-
-    expStartBtn.addEventListener('click', async () => {
-        try {
-        // Gather values from overlay and apply to your active variables.
-        const baseName = (expFileName.value || '').trim();
-        if (!baseName) { alert("Please enter a file name."); return; }
-
-        const net = (expNetworkName.value || '').trim();
-        if (!net) { alert("Please enter a network name."); return; }
-
-        const pbFile = expPlaybackFile.files?.[0];
-        if (!pbFile) { alert("Please select a playback JSON."); return; }
-
-        const runsPerAbr = Math.max(1, parseInt(expRunsPerAbr.value || '1', 10));
-
-        const events = await loadPlaybackEventsFromFile(pbFile);
-
-        await runExperimentSequentialABRs({
-            events,
-            runsPerAbr,
-            lockUI: !!expLockUI.checked,
-            autoExport: !!expAutoExport.checked
+            try {
+                await runner.start();
+            } catch (e) {
+                if (e.message === "CANCELLED") {
+                    setExpUI({ running: false, status: "Cancelled" });
+                } else {
+                    console.error(e);
+                    alert("Experiment failed");
+                }
+            }
         });
 
-        } catch (err) {
-        if (String(err?.message || err).includes('CANCELLED')) {
-            setExpUI({running:false, status:"Cancelled", detail:"Experiment cancelled.", progress01:0});
-        } else {
-            console.error(err);
-            setExpUI({running:false, status:"Error", detail:String(err?.message || err), progress01:0});
-            alert('Experiment failed: ' + (err?.message || err));
-        } 
-        }
-    });
+        expCancelBtn.addEventListener("click", () => {
+            runner?.cancel();
+        });
 
     // Initial state
     setExpUI({running:false, status:"Idle", detail:"Configure settings and press Start.", progress01:0});
